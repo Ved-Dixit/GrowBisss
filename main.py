@@ -288,42 +288,90 @@ def verify_jwt(token):
 # Initialize AI models
 class AIModels:
     def __init__(self):
-        # Chatbot model
-        self.chatbot_tokenizer = AutoTokenizer.from_pretrained("facebook/blenderbot-400M-distill")
-        self.chatbot_model = AutoModelForSeq2SeqLM.from_pretrained("facebook/blenderbot-400M-distill")
-        
-        # Text generation for ads, pitches, etc.
-        self.text_generator = pipeline("text-generation", model="gpt2")
-        
-        # Sentiment analysis for market
-        self.sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
-        
-        # Translation models
-        self.translator_en_hi = pipeline("translation", model="Helsinki-NLP/opus-mt-en-hi")
-        self.translator_hi_en = pipeline("translation", model="Helsinki-NLP/opus-mt-hi-en")
-        
+        st.write("AIModels class instance created. Models will be loaded on first use.")
+        self._chatbot_tokenizer_instance = None
+        self._chatbot_model_instance = None
+        self._text_generator_instance = None
+        self._sentiment_analyzer_instance = None
+        self._translator_en_hi_instance = None
+        self._translator_hi_en_instance = None
+
+    @property
+    def chatbot_tokenizer(self):
+        if self._chatbot_tokenizer_instance is None:
+            st.write("Loading chatbot_tokenizer (facebook/blenderbot-400M-distill)...")
+            self._chatbot_tokenizer_instance = AutoTokenizer.from_pretrained("facebook/blenderbot-400M-distill")
+            st.write("Chatbot_tokenizer loaded.")
+        return self._chatbot_tokenizer_instance
+
+    @property
+    def chatbot_model(self):
+        if self._chatbot_model_instance is None:
+            st.write("Loading chatbot_model (facebook/blenderbot-400M-distill)...")
+            self._chatbot_model_instance = AutoModelForSeq2SeqLM.from_pretrained("facebook/blenderbot-400M-distill")
+            st.write("Chatbot_model loaded.")
+        return self._chatbot_model_instance
+
+    @property
+    def text_generator(self):
+        if self._text_generator_instance is None:
+            st.write("Loading text_generator (gpt2)...")
+            self._text_generator_instance = pipeline("text-generation", model="gpt2")
+            st.write("Text_generator (gpt2) loaded.")
+        return self._text_generator_instance
+
+    @property
+    def sentiment_analyzer(self):
+        if self._sentiment_analyzer_instance is None:
+            st.write("Loading sentiment_analyzer (distilbert-base-uncased-finetuned-sst-2-english)...")
+            self._sentiment_analyzer_instance = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+            st.write("Sentiment_analyzer loaded.")
+        return self._sentiment_analyzer_instance
+
+    @property
+    def translator_en_hi(self):
+        if self._translator_en_hi_instance is None:
+            st.write("Loading translator_en_hi (Helsinki-NLP/opus-mt-en-hi)...")
+            self._translator_en_hi_instance = pipeline("translation", model="Helsinki-NLP/opus-mt-en-hi")
+            st.write("Translator_en_hi loaded.")
+        return self._translator_en_hi_instance
+
+    @property
+    def translator_hi_en(self):
+        if self._translator_hi_en_instance is None:
+            st.write("Loading translator_hi_en (Helsinki-NLP/opus-mt-hi-en)...")
+            self._translator_hi_en_instance = pipeline("translation", model="Helsinki-NLP/opus-mt-hi-en")
+            st.write("Translator_hi_en loaded.")
+        return self._translator_hi_en_instance
+
     def generate_response(self, prompt):
+        # Access models via properties, which will trigger loading on first call
         inputs = self.chatbot_tokenizer([prompt], return_tensors="pt")
         reply_ids = self.chatbot_model.generate(**inputs)
         return self.chatbot_tokenizer.batch_decode(reply_ids, skip_special_tokens=True)[0]
-    
+
     def generate_text(self, prompt, max_length=150):
+        # Access model via property
         return self.text_generator(prompt, max_length=max_length, num_return_sequences=1)[0]['generated_text']
-    
+
     def analyze_sentiment(self, text):
+        # Access model via property
         return self.sentiment_analyzer(text)
-    
+
     def translate(self, text, target_lang):
+        # Access models via properties
         if target_lang == "Hindi":
             return self.translator_en_hi(text)[0]['translation_text']
         elif target_lang == "English":
             return self.translator_hi_en(text)[0]['translation_text']
         return text
-@st.cache_resource # This is key!
+
+# The load_ai_models function remains the same, using @st.cache_resource
+@st.cache_resource
 def load_ai_models():
-    st.write("Attempting to load AI models (cached)...") # Helps track in logs
+    st.write("Attempting to create AIModels instance (models will lazy load)...")
     models = AIModels()
-    st.write("AI models instance created.")
+    st.write("AIModels instance created.")
     return models
 
 # Authentication functions
