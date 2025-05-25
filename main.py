@@ -369,9 +369,7 @@ class AIModels:
 # The load_ai_models function remains the same, using @st.cache_resource
 @st.cache_resource
 def load_ai_models():
-    st.write("Attempting to create AIModels instance (models will lazy load)...")
     models = AIModels()
-    st.write("AIModels instance created.")
     return models
 
 # Authentication functions
