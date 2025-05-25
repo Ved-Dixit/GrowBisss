@@ -451,6 +451,205 @@ def logout():
     
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+def time_ago(dt_object):
+    """Converts a datetime object or date object to a 'time ago' string."""
+    if dt_object is None:
+        return "some time ago"
+
+    now = datetime.now(timezone.utc)
+
+    if isinstance(dt_object, date) and not isinstance(dt_object, datetime):
+        # Convert date to datetime (midnight UTC) for comparison
+        dt_object = datetime.combine(dt_object, datetime.min.time(), tzinfo=timezone.utc)
+    elif isinstance(dt_object, datetime) and dt_object.tzinfo is None:
+        # Assume naive datetime is UTC
+        dt_object = dt_object.replace(tzinfo=timezone.utc)
+    
+    if not isinstance(dt_object, datetime) or dt_object.tzinfo is None: # Should be tz-aware by now
+        return "invalid date"
+
+    diff = now - dt_object
+    
+    seconds = diff.total_seconds()
+    if seconds < 0: # Future date
+        return "in the future" # Or handle as error
+
+    minutes = seconds / 60
+    hours = minutes / 60
+    days = hours / 24
+    
+    if seconds < 60:
+        return f"{int(seconds)} seconds ago"
+    elif minutes < 60:
+        return f"{int(minutes)} minutes ago"
+    elif hours < 24:
+        return f"{int(hours)} hours ago"
+    elif days < 7:
+        return f"{int(days)} days ago"
+    elif days < 30:
+        return f"{int(days // 7)} weeks ago"
+    elif days < 365:
+        return f"{int(days // 30)} months ago"
+    else:
+        return f"{int(days // 365)} years ago"
+
+def get_quarter_dates(date_obj):
+    """Returns (start_date, end_date) for the quarter of date_obj."""
+    if isinstance(date_obj, datetime):
+        date_obj = date_obj.date()
+    ts = pd.Timestamp(date_obj)
+    quarter_start = ts.to_period('Q').start_time.date()
+    quarter_end = ts.to_period('Q').end_time.date()
+    return quarter_start, quarter_end
+
+def get_previous_quarter_dates(date_obj):
+    """Returns (start_date, end_date) for the quarter before date_obj's quarter."""
+    if isinstance(date_obj, datetime):
+        date_obj = date_obj.date()
+    ts = pd.Timestamp(date_obj)
+    current_quarter_start = ts.to_period('Q').start_time.date()
+    previous_quarter_any_day = current_quarter_start - timedelta(days=1)
+    return get_quarter_dates(previous_quarter_any_day)
+
+def get_dashboard_financials(business_id, period_start, period_end):
+    """Fetches revenue for a given period."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    revenue = 0.0
+    try:
+        cur.execute(
+            "SELECT SUM(total_amount) FROM invoices WHERE business_id = %s AND issue_date BETWEEN %s AND %s",
+            (business_id, period_start, period_end)
+        )
+        result = cur.fetchone()
+        if result and result[0] is not None:
+            revenue = float(result[0])
+    except Exception as e:
+        st.error(f"Error fetching revenue: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return revenue
+
+def get_total_monthly_salary_expense(business_id):
+    """Fetches current total monthly salary expense."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    total_salary = 0.0
+    try:
+        cur.execute("SELECT SUM(salary) FROM employees WHERE business_id = %s", (business_id,))
+        result = cur.fetchone()
+        if result and result[0] is not None:
+            total_salary = float(result[0])
+    except Exception as e:
+        st.error(f"Error fetching total salaries: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return total_salary
+
+def get_recent_activities_for_dashboard(business_id, limit=4):
+    """Fetches recent activities for the dashboard."""
+    activities_data = []
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # 1. New Sale
+    try:
+        cur.execute(
+            """SELECT customer_name, total_amount, issue_date 
+               FROM invoices 
+               WHERE business_id = %s 
+               ORDER BY issue_date DESC, id DESC LIMIT 1""",
+            (business_id,)
+        )
+        sale = cur.fetchone()
+        if sale:
+            activities_data.append({
+                "type": "New Sale",
+                "detail": f"To {sale[0]} for ${sale[1]:,.2f}",
+                "time_obj": sale[2] 
+            })
+    except Exception as e:
+        st.warning(f"Error fetching new sale activity: {e}")
+
+    # 2. Project Update (from documents)
+    try:
+        cur.execute(
+            """SELECT title, content, created_at 
+               FROM documents 
+               WHERE business_id = %s AND doc_type = 'project_update' 
+               ORDER BY created_at DESC LIMIT 1""",
+            (business_id,)
+        )
+        update = cur.fetchone()
+        if update:
+            activities_data.append({
+                "type": "Project Update",
+                "detail": f"{update[0]}: {update[1][:70]}..." if update[1] else update[0],
+                "time_obj": update[2]
+            })
+    except Exception as e:
+        st.warning(f"Error fetching project update activity: {e}")
+        
+    # 3. HR (New Hire)
+    try:
+        cur.execute(
+            """SELECT name, join_date 
+               FROM employees 
+               WHERE business_id = %s 
+               ORDER BY join_date DESC, id DESC LIMIT 1""",
+            (business_id,)
+        )
+        hire = cur.fetchone()
+        if hire:
+            activities_data.append({
+                "type": "HR - New Hire",
+                "detail": f"Welcome aboard, {hire[0]}!",
+                "time_obj": hire[1]
+            })
+    except Exception as e:
+        st.warning(f"Error fetching HR activity: {e}")
+
+    # 4. Inventory (Low Stock)
+    try:
+        cur.execute(
+            """SELECT name, quantity, created_at 
+               FROM products 
+               WHERE business_id = %s AND quantity < 10 
+               ORDER BY quantity ASC, created_at DESC LIMIT 1""",
+            (business_id,)
+        )
+        low_stock = cur.fetchone()
+        if low_stock:
+            activities_data.append({
+                "type": "Inventory Alert",
+                "detail": f"Low stock for {low_stock[0]} (Qty: {low_stock[1]})",
+                "time_obj": low_stock[2] # Using product created_at as proxy for event time
+            })
+    except Exception as e:
+        st.warning(f"Error fetching inventory activity: {e}")
+    
+    cur.close()
+    conn.close()
+
+    # Sort activities by time_obj, most recent first
+    def get_sort_key(activity):
+        time_val = activity.get("time_obj")
+        if isinstance(time_val, datetime):
+            return time_val
+        if isinstance(time_val, date): # Handles datetime.date from DB
+            return datetime.combine(time_val, datetime.min.time()).replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc) # Fallback for None
+
+    activities_data.sort(key=get_sort_key, reverse=True)
+    
+    # Convert time_obj to "time ago" string for display
+    for act in activities_data:
+        act["time_string"] = time_ago(act.get("time_obj"))
+
+    return activities_data[:limit]
+
 
 # Inventory & Billing Module
 def inventory_module(business_id, ai_models):
@@ -3426,29 +3625,78 @@ def main():
     selected_module = st.sidebar.selectbox("Select Module", modules)
     
     # Module routing
+        # Module routing
     if selected_module == "Dashboard":
         st.header("📊 Dashboard")
+
+        # --- Business Overview ---
+        st.write("### Business Overview (Quarterly)")
         
-        st.write("### Business Overview")
+        today = datetime.now().date()
+        cq_start, cq_end = get_quarter_dates(today)
+        pq_start, pq_end = get_previous_quarter_dates(today)
+
+        current_q_revenue = get_dashboard_financials(st.session_state.business_id, cq_start, cq_end)
+        prev_q_revenue = get_dashboard_financials(st.session_state.business_id, pq_start, pq_end)
+
+        # Expenses: Simplified as 3x current total monthly salary for a quarter.
+        # This is a placeholder for a more robust expense tracking system.
+        total_monthly_salary = get_total_monthly_salary_expense(st.session_state.business_id)
+        current_q_expenses_est = total_monthly_salary * 3
+        prev_q_expenses_est = total_monthly_salary * 3 # Assuming constant for simplicity of comparison base
+
+        current_q_profit_est = current_q_revenue - current_q_expenses_est
+        prev_q_profit_est = prev_q_revenue - prev_q_expenses_est
+
+        def format_currency(value):
+            return f"${value:,.0f}"
+
+        def calculate_delta_string(current, previous):
+            if previous == 0 and current > 0:
+                return "New"
+            if previous == 0 and current == 0:
+                return "0%"
+            if previous == 0 and current < 0: # Should not happen with revenue/positive expenses
+                 return "-100%" # Or some indicator of new negative
+            if previous != 0:
+                percentage_change = ((current - previous) / abs(previous)) * 100
+                return f"{percentage_change:.1f}%"
+            return "N/A"
+
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Revenue", "$1.2M", "15% vs last quarter")
+            st.metric(
+                "Revenue (Current Qtr)", 
+                format_currency(current_q_revenue), 
+                calculate_delta_string(current_q_revenue, prev_q_revenue) + " vs Prev. Qtr"
+            )
         with col2:
-            st.metric("Expenses", "$850K", "8% vs last quarter")
+            st.metric(
+                "Est. Expenses (Current Qtr)", 
+                format_currency(current_q_expenses_est),
+                # Delta for estimated expenses might not be very meaningful if based on current salaries only
+                # For now, let's show it for consistency, but acknowledge its estimation.
+                calculate_delta_string(current_q_expenses_est, prev_q_expenses_est) + " vs Prev. Qtr (Est.)"
+            )
+            st.caption("Expenses estimated based on 3x current monthly salaries.")
         with col3:
-            st.metric("Profit", "$350K", "25% vs last quarter")
+            st.metric(
+                "Est. Profit (Current Qtr)", 
+                format_currency(current_q_profit_est),
+                calculate_delta_string(current_q_profit_est, prev_q_profit_est) + " vs Prev. Qtr (Est.)"
+            )
         
+        # --- Recent Activity ---
         st.write("### Recent Activity")
-        activities = [
-            {"type": "New Sale", "detail": "Enterprise Plan - $25,000", "time": "2 hours ago"},
-            {"type": "Project Update", "detail": "Website Redesign - 75% complete", "time": "1 day ago"},
-            {"type": "HR", "detail": "New hire: Marketing Manager", "time": "2 days ago"},
-            {"type": "Inventory", "detail": "Low stock alert: Office Chairs", "time": "3 days ago"}
-        ]
+        activities = get_recent_activities_for_dashboard(st.session_state.business_id, limit=5)
         
-        for activity in activities:
-            with st.expander(f"{activity['type']}: {activity['detail']}"):
-                st.write(f"⏱️ {activity['time']}")
+        if activities:
+            for activity in activities:
+                with st.expander(f"{activity['type']}: {activity['detail']}"):
+                    st.write(f"⏱️ {activity['time_string']}")
+        else:
+            st.info("No recent activity to display.")
+
     
     elif selected_module == "Inventory & Billing":
         inventory_module(st.session_state.business_id, ai_models)
