@@ -1403,9 +1403,9 @@ def document_module(business_id, ai_models):
                     tax_amount = total * tax_rate
                     grand_total = total + tax_amount
                     
-                    doc_content += f"\n\n{"Subtotal:".ljust(55)} ${total:.2f}"
-                    doc_content += f"\n{"Tax (18%):".ljust(55)} ${tax_amount:.2f}"
-                    doc_content += f"\n{"Total Due:".ljust(55)} ${grand_total:.2f}"
+                    doc_content += f"\n\n{'Subtotal:'.ljust(55)} ${total:.2f}"
+                    doc_content += f"\n{'Tax (18%):'.ljust(55)} ${tax_amount:.2f}"
+                    doc_content += f"\n{'Total Due:'.ljust(55)} ${grand_total:.2f}"
                     
                     st.text_area("Generated Invoice", doc_content, height=400)
                     
