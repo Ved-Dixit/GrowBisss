@@ -318,6 +318,12 @@ class AIModels:
         elif target_lang == "English":
             return self.translator_hi_en(text)[0]['translation_text']
         return text
+@st.cache_resource # This is key!
+ def load_ai_models():
+     st.write("Attempting to load AI models (cached)...") # Helps track in logs
+     models = AIModels()
+     st.write("AI models instance created.")
+     return models
 
 # Authentication functions
 def login_page():
@@ -3319,7 +3325,8 @@ def market_forecasting(business_id, ai_models):
 def main():
     # Initialize database and AI models
     init_db()
-    ai_models = AIModels()
+    
+    ai_models=load_ai_models
     
     st.set_page_config(
         page_title="GrowBis", 
