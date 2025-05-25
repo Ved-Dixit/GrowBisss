@@ -712,7 +712,7 @@ def hr_module(business_id, ai_models):
                     df["Email"].str.contains(search_term, case=False) |
                     df["Position"].str.contains(search_term, case=False)
                 ]
-                st.dataframe(filtered.drop(columns=["Business ID"]))
+                st.dataframe(filtered.drop(columns=["Business ID"]), hide_index=True)
         else:
             st.info("No employees in the system yet.")
         
@@ -1477,7 +1477,7 @@ def document_module(business_id, ai_models):
             search_term = st.text_input("Search Documents")
             
             df = pd.DataFrame(documents, columns=[
-                "ID", "Business ID", "Title", "Content", "Type", "Created At", "Created By"
+                "ID", "Title", "Content", "Type", "Created At", "Created By", "Business ID"
             ])
 
             df['Created At'] = pd.to_datetime(df['Created At'])  
@@ -1851,7 +1851,7 @@ def investor_dashboard(business_id, ai_models):
                 "ID", "Name", "Firm", "Email", "Investment Focus", 
                 "Portfolio Companies", "Last Contact", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID"]))
+            st.dataframe(df.drop(columns=["Business ID"]), hide_index=True)
         else:
             st.info("No investors in database yet.")
         
@@ -2020,8 +2020,8 @@ def schemes_module(business_id, ai_models):
         
         if schemes:
             df = pd.DataFrame(schemes, columns=[
-                "ID", "Business ID", "Name", "Description", "Eligibility", 
-                "Benefits", "Deadline", "Sector", "Is Govt"
+                "ID", "Name", "Description", "Eligibility", 
+                "Benefits", "Deadline", "Sector", "Is Govt", "Business ID"
             ])
             
             # Filter options
@@ -2494,10 +2494,10 @@ def hiring_helper(business_id, ai_models):
         
         if jobs:
             df = pd.DataFrame(jobs, columns=[
-                "ID", "Business ID", "Title", "Department", "Description", 
-                "Requirements", "Experience", "Posted Date", "Status"
+                "ID", "Title", "Department", "Description", 
+                "Requirements", "Experience", "Posted Date", "Status", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID"]))
+            st.dataframe(df.drop(columns=["Business ID"]), hide_index=True)
         else:
             st.info("No job openings posted yet.")
         
@@ -2618,10 +2618,10 @@ def tax_module(business_id, ai_models):
         
         if records:
             df = pd.DataFrame(records, columns=[
-                "ID", "Business ID", "Financial Year", "Total Income", "Tax Paid", 
-                "Filing Date", "Status", "Notes"
+                "ID", "Financial Year", "Total Income", "Tax Paid", 
+                "Filing Date", "Status", "Notes", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID"]))
+            st.dataframe(df.drop(columns=["Business ID"]), hide_index=True)
             
             # Tax summary
             st.write("### Tax Summary")
@@ -2754,10 +2754,10 @@ def ipo_module(business_id, ai_models):
         
         if ipos:
             df = pd.DataFrame(ipos, columns=[
-                "ID", "Business ID", "Company", "Issue Size", "Price Range", 
-                "Open Date", "Close Date", "Status", "Allotment Date", "Listing Date"
+                "ID", "Company", "Issue Size", "Price Range", 
+                "Open Date", "Close Date", "Status", "Allotment Date", "Listing Date", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID"]))
+            st.dataframe(df.drop(columns=["Business ID"]), hide_index=True)
             
             # Filter by status
             status_filter = st.multiselect(
@@ -2768,7 +2768,7 @@ def ipo_module(business_id, ai_models):
             
             if status_filter:
                 filtered_df = df[df["Status"].isin(status_filter)]
-                st.dataframe(filtered_df.drop(columns=["Business ID"]))
+                st.dataframe(filtered_df.drop(columns=["Business ID"]), hide_index=True)
         else:
             st.info("No IPO data available.")
         
@@ -2910,10 +2910,10 @@ def legal_marketplace(business_id, ai_models):
         
         if providers:
             df = pd.DataFrame(providers, columns=[
-                "ID", "Business ID", "Name", "Service Type", "Email", 
-                "Rating", "Experience", "Pricing", "Available"
+                "ID", "Name", "Service Type", "Email", 
+                "Rating", "Experience", "Pricing", "Available", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID", "Service Type"]))
+            st.dataframe(df.drop(columns=["Business ID", "Service Type"]), hide_index=True)
         else:
             st.info("No legal service providers registered yet.")
         
@@ -2946,10 +2946,10 @@ def legal_marketplace(business_id, ai_models):
         
         if providers:
             df = pd.DataFrame(providers, columns=[
-                "ID", "Business ID", "Name", "Service Type", "Email", 
-                "Rating", "Experience", "Pricing", "Available"
+                "ID", "Name", "Service Type", "Email", 
+                "Rating", "Experience", "Pricing", "Available", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID", "Service Type"]))
+            st.dataframe(df.drop(columns=["Business ID", "Service Type"]), hide_index=True)
         else:
             st.info("No CA service providers registered yet.")
         
@@ -2982,10 +2982,10 @@ def legal_marketplace(business_id, ai_models):
         
         if providers:
             df = pd.DataFrame(providers, columns=[
-                "ID", "Business ID", "Name", "Service Type", "Email", 
-                "Rating", "Experience", "Pricing", "Available"
+                "ID", "Name", "Service Type", "Email", 
+                "Rating", "Experience", "Pricing", "Available", "Business ID"
             ])
-            st.dataframe(df.drop(columns=["Business ID", "Service Type"]))
+            st.dataframe(df.drop(columns=["Business ID", "Service Type"]), hide_index=True)
         else:
             st.info("No insurance providers registered yet.")
         
