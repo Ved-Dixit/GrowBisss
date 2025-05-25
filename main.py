@@ -21,6 +21,7 @@ import plotly.express as px
 from PIL import Image
 import json
 from fpdf import FPDF
+from datetime import datetime, timedelta, timezone, date
 # Load environment variables
 
 # Database Connection
@@ -3525,7 +3526,7 @@ def main():
     # Initialize database and AI models
     init_db()
     
-    ai_models=load_ai_models
+    ai_models=load_ai_models()
     
     st.set_page_config(
         page_title="GrowBis", 
