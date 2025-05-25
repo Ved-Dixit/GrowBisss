@@ -319,11 +319,11 @@ class AIModels:
             return self.translator_hi_en(text)[0]['translation_text']
         return text
 @st.cache_resource # This is key!
- def load_ai_models():
-     st.write("Attempting to load AI models (cached)...") # Helps track in logs
-     models = AIModels()
-     st.write("AI models instance created.")
-     return models
+def load_ai_models():
+    st.write("Attempting to load AI models (cached)...") # Helps track in logs
+    models = AIModels()
+    st.write("AI models instance created.")
+    return models
 
 # Authentication functions
 def login_page():
