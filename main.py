@@ -3299,9 +3299,246 @@ def legal_marketplace(business_id, ai_models):
     
     cur.close()
     conn.close()
+def get_financial_performance_data(business_id, num_periods=12, period_type='M'):
+    """
+    Fetches financial performance data (Revenue, Expenses, Profit) for the last num_periods.
+    period_type can be 'M' for Monthly or 'Q' for Quarterly.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    end_date = datetime.now().date()
+    
+    if period_type == 'M':
+        # Use Month Start frequency for easier grouping with DATE_TRUNC
+        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS')
+        period_label_format = '%Y-%m'
+        sql_trunc_period = 'month'
+    elif period_type == 'Q':
+        # Use Quarter Start frequency
+        current_quarter_start = pd.Timestamp(end_date).to_period('Q').start_time.date()
+        dates = pd.date_range(end=current_quarter_start, periods=num_periods, freq='QS')
+        # For label, we'll calculate quarter number manually
+        sql_trunc_period = 'quarter'
+    else: # Default to monthly
+        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS')
+        period_label_format = '%Y-%m'
+        sql_trunc_period = 'month'
+
+    df_data = pd.DataFrame({'PeriodStart': dates})
+    
+    if period_type == 'Q':
+        df_data['PeriodLabel'] = df_data['PeriodStart'].apply(lambda x: f"{x.year}-Q{((x.month-1)//3)+1}")
+    else:
+        df_data['PeriodLabel'] = df_data['PeriodStart'].dt.strftime(period_label_format)
+
+    # Fetch Revenue
+    try:
+        query_revenue = sql.SQL("""
+            SELECT DATE_TRUNC(%s, issue_date) as period_start_db, SUM(total_amount) as revenue
+            FROM invoices
+            WHERE business_id = %s AND issue_date >= %s AND issue_date <= %s
+            GROUP BY period_start_db
+            ORDER BY period_start_db;
+        """)
+        # Ensure dates.min() is a date object
+        min_date_for_query = dates.min().date() if hasattr(dates.min(), 'date') else dates.min()
+        cur.execute(query_revenue, (sql_trunc_period, business_id, min_date_for_query, end_date))
+        revenue_data = cur.fetchall()
+        df_revenue = pd.DataFrame(revenue_data, columns=['PeriodStart', 'Revenue'])
+        if not df_revenue.empty:
+            df_revenue['PeriodStart'] = pd.to_datetime(df_revenue['PeriodStart'])
+            df_data = pd.merge(df_data, df_revenue, on='PeriodStart', how='left')
+        else:
+            df_data['Revenue'] = 0.0
+    except Exception as e:
+        st.error(f"Error fetching revenue data: {e}")
+        df_data['Revenue'] = 0.0
+    df_data['Revenue'] = df_data['Revenue'].fillna(0.0).astype(float)
+
+    # Fetch Expenses (Simplified: using total monthly salaries)
+    # For quarterly, this will be 3x monthly salary.
+    try:
+        cur.execute("SELECT SUM(salary) FROM employees WHERE business_id = %s", (business_id,))
+        total_monthly_salary_tuple = cur.fetchone()
+        total_monthly_salary = float(total_monthly_salary_tuple[0]) if total_monthly_salary_tuple and total_monthly_salary_tuple[0] is not None else 0.0
+        
+        expense_per_period = total_monthly_salary * 3 if period_type == 'Q' else total_monthly_salary
+        df_data['Expenses'] = expense_per_period
+    except Exception as e:
+        st.error(f"Error fetching salary data for expenses: {e}")
+        df_data['Expenses'] = 0.0
+    df_data['Expenses'] = df_data['Expenses'].fillna(0.0).astype(float)
+    
+    df_data['Profit'] = df_data['Revenue'] - df_data['Expenses']
+    
+    cur.close()
+    conn.close()
+    return df_data[['PeriodLabel', 'Revenue', 'Expenses', 'Profit']].rename(columns={'PeriodLabel': 'Period'})
+
+def get_inventory_turnover_data(business_id, lookback_days=365):
+    """Calculates Inventory Turnover."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cogs = 0.0
+    current_inventory_value_at_cost = 0.0
+    
+    end_date = datetime.now().date()
+    start_date_cogs = end_date - timedelta(days=lookback_days)
+
+    try:
+        # Fetch all products to get their prices (and estimate cost)
+        cur.execute("SELECT id, price, quantity FROM products WHERE business_id = %s", (business_id,))
+        products_details = cur.fetchall()
+        
+        product_info = {} # {product_id: {'price': selling_price, 'quantity': current_quantity}}
+        for prod_id, price, quantity in products_details:
+            product_info[prod_id] = {'price': float(price) if price else 0.0, 
+                                     'quantity': int(quantity) if quantity else 0}
+
+        # Calculate COGS
+        cur.execute(
+            """SELECT items FROM invoices 
+               WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+            (business_id, start_date_cogs, end_date)
+        )
+        invoices_items_json = cur.fetchall()
+        
+        for items_json_tuple in invoices_items_json:
+            if items_json_tuple and items_json_tuple[0]:
+                try:
+                    # items column is JSONB, psycopg2 might return it as dict/list already
+                    if isinstance(items_json_tuple[0], str):
+                        items_list = json.loads(items_json_tuple[0])
+                    else:
+                        items_list = items_json_tuple[0] # Assuming it's already a list of dicts
+                        
+                    for item_detail in items_list:
+                        product_id = item_detail.get('product_id')
+                        quantity_sold = item_detail.get('quantity', 0)
+                        
+                        if product_id in product_info:
+                            selling_price = product_info[product_id]['price']
+                            cost_price_estimate = selling_price * 0.6 # Assume 60% cost margin
+                            cogs += quantity_sold * cost_price_estimate
+                except json.JSONDecodeError as e:
+                    st.warning(f"Could not decode items JSON: {e} - Data: {items_json_tuple[0][:100]}")
+                except TypeError as e:
+                    st.warning(f"Type error processing items: {e} - Data: {items_json_tuple[0]}")
+
+
+        # Calculate Current Inventory Value at Cost
+        for prod_id, info in product_info.items():
+            cost_price_estimate = info['price'] * 0.6
+            current_inventory_value_at_cost += info['quantity'] * cost_price_estimate
+                
+        if current_inventory_value_at_cost > 0:
+            inventory_turnover_raw = cogs / current_inventory_value_at_cost
+        else:
+            inventory_turnover_raw = 0.0
+
+        # Example target and trend logic (can be refined)
+        target_turnover = 6.0 
+        trend = "up" if inventory_turnover_raw > target_turnover * 0.8 else "down"
+        if inventory_turnover_raw < target_turnover * 0.5:
+            trend = "critical_low"
+
+
+    except Exception as e:
+        st.error(f"Error calculating inventory turnover: {e}")
+        inventory_turnover_raw = 0.0 
+        target_turnover = 6.0
+        trend = "error"
+    finally:
+        cur.close()
+        conn.close()
+        
+    return {
+        "name": "Inventory Turnover",
+        "value": round(inventory_turnover_raw, 1),
+        "target": target_turnover,
+        "trend": trend 
+    }
+
+def get_sales_performance_report_data(business_id, start_date, end_date):
+    """Fetches data for the Sales Performance custom report."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    report = {
+        "total_revenue": 0.0,
+        "top_product_name": "N/A",
+        "top_product_revenue": 0.0,
+        "num_invoices": 0,
+        "avg_invoice_value": 0.0
+    }
+
+    try:
+        # Total Revenue and Number of Invoices
+        cur.execute(
+            """SELECT SUM(total_amount), COUNT(id) FROM invoices
+               WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+            (business_id, start_date, end_date)
+        )
+        result = cur.fetchone()
+        if result:
+            report["total_revenue"] = float(result[0]) if result[0] is not None else 0.0
+            report["num_invoices"] = int(result[1]) if result[1] is not None else 0
+        
+        if report["num_invoices"] > 0:
+            report["avg_invoice_value"] = report["total_revenue"] / report["num_invoices"]
+
+        # Top Product
+        cur.execute(
+            """SELECT items FROM invoices
+               WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+            (business_id, start_date, end_date)
+        )
+        all_items_json_tuples = cur.fetchall()
+        
+        product_sales = {} # {product_name: total_sales_value}
+        for items_json_tuple in all_items_json_tuples:
+            if items_json_tuple and items_json_tuple[0]:
+                try:
+                    if isinstance(items_json_tuple[0], str):
+                        items_list = json.loads(items_json_tuple[0])
+                    else:
+                        items_list = items_json_tuple[0]
+
+                    for item_detail in items_list:
+                        name = item_detail.get("name")
+                        total = item_detail.get("total", 0.0)
+                        if name:
+                            product_sales[name] = product_sales.get(name, 0.0) + float(total)
+                except json.JSONDecodeError as e:
+                    st.warning(f"Could not decode items JSON for top product: {e} - Data: {items_json_tuple[0][:100]}")
+                except TypeError as e:
+                    st.warning(f"Type error processing items for top product: {e} - Data: {items_json_tuple[0]}")
+
+        if product_sales:
+            # Sort products by sales value in descending order
+            sorted_products = sorted(product_sales.items(), key=lambda x: x[1], reverse=True)
+            if sorted_products:
+                report["top_product_name"] = sorted_products[0][0]
+                report["top_product_revenue"] = sorted_products[0][1]
+                # You could extend this to top N products
+                # report["top_products_list"] = sorted_products[:3] 
+
+    except Exception as e:
+        st.error(f"Error generating sales performance report data: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return report
+
+def calculate_delta(current, previous):
+    if previous == 0:
+        return "N/A" if current == 0 else "New" # Or handle as 100% if current > 0
+    return f"{(current - previous) / previous * 100:.1f}%"
 
 # Enterprise Intelligence Module
-def enterprise_intelligence(business_id, ai_models):
+def enterprise_intelligence(business_id, ai_models): # ai_models might not be used here
     st.header("📊 Enterprise Intelligence Dashboards")
     
     tab1, tab2, tab3 = st.tabs([
@@ -3313,144 +3550,221 @@ def enterprise_intelligence(business_id, ai_models):
     with tab1:
         st.subheader("Financial Performance")
         
-        # Get financial data
-        conn = get_db_connection()
-        cur = conn.cursor()
+        # --- Financial Performance Data ---
+        # Option to select period type (Monthly/Quarterly)
+        fin_period_type = st.selectbox("View Financials By:", ["Monthly", "Quarterly"], key="fin_period_type")
+        num_fin_periods = st.slider("Number of Past Periods to Display:", min_value=3, max_value=24, value=12 if fin_period_type == "Monthly" else 8, key="num_fin_periods")
+
+        df_finance = get_financial_performance_data(business_id, num_periods=num_fin_periods, period_type=fin_period_type[0]) # 'M' or 'Q'
         
-        # Simulated financial data
-        months = pd.date_range(end=datetime.now(), periods=12, freq='M')
-        revenue = np.random.normal(loc=500000, scale=100000, size=12).cumsum()
-        expenses = np.random.normal(loc=300000, scale=80000, size=12).cumsum()
-        profit = revenue - expenses
-        
-        df_finance = pd.DataFrame({
-            "Month": months,
-            "Revenue": revenue,
-            "Expenses": expenses,
-            "Profit": profit
-        })
-        
-        # Financial charts
-        fig = px.line(
-            df_finance, 
-            x="Month", 
-            y=["Revenue", "Expenses", "Profit"],
-            title="Financial Performance (12 Months)"
-        )
-        st.plotly_chart(fig)
-        
-        # KPI metrics
-        st.write("### Key Financial Metrics")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Revenue", f"${revenue[-1]:,.0f}", 
-                     f"{(revenue[-1] - revenue[-2])/revenue[-2]*100:.1f}% MoM")
-        with col2:
-            st.metric("Total Expenses", f"${expenses[-1]:,.0f}", 
-                     f"{(expenses[-1] - expenses[-2])/expenses[-2]*100:.1f}% MoM")
-        with col3:
-            st.metric("Net Profit", f"${profit[-1]:,.0f}", 
-                     f"{(profit[-1] - profit[-2])/profit[-2]*100:.1f}% MoM")
-        
-        cur.close()
-        conn.close()
+        if not df_finance.empty:
+            # Financial charts
+            fig_finance = px.line(
+                df_finance, 
+                x="Period", 
+                y=["Revenue", "Expenses", "Profit"],
+                title=f"{fin_period_type} Financial Performance ({num_fin_periods} Periods)"
+            )
+            st.plotly_chart(fig_finance, use_container_width=True)
+            
+            # KPI metrics
+            st.write(f"### Key Financial Metrics (Latest {fin_period_type[:-2]})") # "Month" or "Quarter"
+            
+            latest_period_data = df_finance.iloc[-1]
+            revenue_latest = latest_period_data['Revenue']
+            expenses_latest = latest_period_data['Expenses']
+            profit_latest = latest_period_data['Profit']
+            
+            revenue_prev, expenses_prev, profit_prev = 0.0, 0.0, 0.0
+            delta_label = f"vs Prev. {fin_period_type[:-2]}"
+            if len(df_finance) >= 2:
+                prev_period_data = df_finance.iloc[-2]
+                revenue_prev = prev_period_data['Revenue']
+                expenses_prev = prev_period_data['Expenses']
+                profit_prev = prev_period_data['Profit']
+            else:
+                delta_label = "(No Previous Period Data)"
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(f"Total Revenue", f"${revenue_latest:,.0f}", 
+                         f"{calculate_delta(revenue_latest, revenue_prev)} {delta_label}")
+            with col2:
+                st.metric(f"Total Expenses (Est.)", f"${expenses_latest:,.0f}", 
+                         f"{calculate_delta(expenses_latest, expenses_prev)} {delta_label}")
+                st.caption("Expenses estimated based on total salaries.")
+            with col3:
+                st.metric(f"Net Profit (Est.)", f"${profit_latest:,.0f}", 
+                         f"{calculate_delta(profit_latest, profit_prev)} {delta_label}")
+        else:
+            st.info("No financial data available to display.")
     
     with tab2:
         st.subheader("Operational Metrics")
         
-        # Simulated operational data
-        metrics = [
-            {"name": "Customer Acquisition Cost", "value": 150, "target": 120, "trend": "up"},
-            {"name": "Customer Lifetime Value", "value": 850, "target": 1000, "trend": "down"},
-            {"name": "Conversion Rate", "value": 3.2, "target": 4.0, "trend": "up"},
-            {"name": "Churn Rate", "value": 5.1, "target": 4.0, "trend": "down"},
-            {"name": "Employee Productivity", "value": 85, "target": 90, "trend": "up"},
-            {"name": "Inventory Turnover", "value": 6.5, "target": 8.0, "trend": "down"}
+        # --- Operational Metrics Data ---
+        # Fetch dynamic data where possible
+        inventory_turnover_metric = get_inventory_turnover_data(business_id)
+
+        # Simulated operational data (can be replaced with real data functions)
+        simulated_metrics = [
+            {"name": "Customer Acquisition Cost (CAC)", "value": 150, "target": 120, "trend": "up", "unit": "$"}, # Placeholder
+            {"name": "Customer Lifetime Value (CLV)", "value": 850, "target": 1000, "trend": "down", "unit": "$"}, # Placeholder
+            {"name": "Conversion Rate", "value": 3.2, "target": 4.0, "trend": "up", "unit": "%"}, # Placeholder
+            {"name": "Churn Rate", "value": 5.1, "target": 4.0, "trend": "down", "unit": "%"}, # Placeholder
+            # Add our dynamic metric
+            inventory_turnover_metric,
+            {"name": "Employee Productivity Score", "value": 85, "target": 90, "trend": "up", "unit": "%"}, # Placeholder
         ]
         
         # Display metrics
         cols = st.columns(3)
-        for i, metric in enumerate(metrics):
+        for i, metric in enumerate(simulated_metrics):
             with cols[i % 3]:
-                delta = f"{'↑' if metric['trend'] == 'up' else '↓'} vs target"
+                delta_val = metric['value'] - metric['target']
+                delta_display = f"{delta_val:+.1f} vs target" if isinstance(metric['value'], (int, float)) and isinstance(metric['target'], (int, float)) else metric.get('trend', '')
+                
+                value_display = f"{metric['unit']}{metric['value']}" if metric.get('unit') and metric.get('unit') == "$" else f"{metric['value']}{metric.get('unit', '')}"
+
+                # Determine delta color based on whether higher is better or lower is better
+                # This needs more sophisticated logic based on metric type
+                delta_color_logic = "normal" # Default
+                if metric['name'] == "Inventory Turnover": # Higher is generally better
+                     delta_color_logic = "normal" if metric['value'] >= metric['target'] else "inverse"
+                elif metric['name'] == "Churn Rate" or metric['name'] == "Customer Acquisition Cost (CAC)": # Lower is better
+                     delta_color_logic = "inverse" if metric['value'] >= metric['target'] else "normal"
+                else: # Higher is better for others by default
+                     delta_color_logic = "normal" if metric['value'] >= metric['target'] else "inverse"
+
+
                 st.metric(
                     metric["name"],
-                    f"{metric['value']}{'%' if '%' in metric['name'] else ''}",
-                    delta,
-                    delta_color="inverse" if metric['value'] < metric['target'] else "normal"
+                    value_display,
+                    delta_display,
+                    delta_color=delta_color_logic
                 )
         
-        # Operational efficiency
-        st.write("### Efficiency Trends")
+        # Operational efficiency (can be made dynamic if data source exists)
+        st.write("### Efficiency Trends (Simulated)")
         efficiency_data = pd.DataFrame({
             "Month": pd.date_range(end=datetime.now(), periods=6, freq='M'),
-            "Efficiency": np.random.normal(loc=80, scale=5, size=6)
+            "Efficiency": [78, 82, 80, 85, 83, 86] # Example data
         })
         
-        fig = px.line(
+        fig_efficiency = px.line(
             efficiency_data, 
             x="Month", 
             y="Efficiency",
             title="Operational Efficiency (6 Months)"
         )
-        st.plotly_chart(fig)
+        st.plotly_chart(fig_efficiency, use_container_width=True)
     
     with tab3:
         st.subheader("Custom Reports")
         
         report_type = st.selectbox("Select Report Type", [
             "Sales Performance", 
-            "Marketing ROI", 
-            "Employee Productivity", 
-            "Inventory Analysis"
+            "Marketing ROI (Simulated)", 
+            "Employee Productivity (Simulated)", 
+            "Inventory Analysis (Simulated)"
         ])
         
         time_period = st.selectbox("Time Period", [
             "Last 7 Days", 
+            "Last 30 Days",
+            "Last 90 Days",
             "Last Month", 
             "Last Quarter", 
             "Last Year", 
             "Custom Range"
         ])
         
+        report_start_date, report_end_date = datetime.now().date(), datetime.now().date()
+
         if time_period == "Custom Range":
-            start_date = st.date_input("Start Date")
-            end_date = st.date_input("End Date")
-        
+            report_start_date = st.date_input("Start Date", datetime.now().date() - timedelta(days=30))
+            report_end_date = st.date_input("End Date", datetime.now().date())
+        else:
+            today = datetime.now().date()
+            if time_period == "Last 7 Days":
+                report_start_date = today - timedelta(days=6)
+            elif time_period == "Last 30 Days":
+                report_start_date = today - timedelta(days=29)
+            elif time_period == "Last 90 Days":
+                report_start_date = today - timedelta(days=89)
+            elif time_period == "Last Month":
+                end_of_last_month = today.replace(day=1) - timedelta(days=1)
+                report_start_date = end_of_last_month.replace(day=1)
+                report_end_date = end_of_last_month
+            elif time_period == "Last Quarter":
+                current_quarter_start = pd.Timestamp(today).to_period('Q').start_time.date()
+                report_end_date = current_quarter_start - timedelta(days=1)
+                report_start_date = pd.Timestamp(report_end_date).to_period('Q').start_time.date()
+            elif time_period == "Last Year":
+                report_start_date = today.replace(year=today.year - 1, month=1, day=1)
+                report_end_date = today.replace(year=today.year - 1, month=12, day=31)
+            # report_end_date is today for most non-custom ranges, except "Last Month", "Last Quarter", "Last Year"
+            if time_period not in ["Last Month", "Last Quarter", "Last Year", "Custom Range"]:
+                 report_end_date = today
+
+
         if st.button("Generate Report"):
             with st.spinner("Generating report..."):
-                time.sleep(2)  # Simulate report generation
-                
-                # Simulated report data
-                st.success("Report generated successfully!")
-                
                 if report_type == "Sales Performance":
-                    st.write("### Sales Performance Report")
-                    st.write("- Total Revenue: $1,250,000")
-                    st.write("- Top Product: Premium Suite ($450,000)")
-                    st.write("- Best Region: North America ($620,000)")
-                elif report_type == "Marketing ROI":
+                    sales_data = get_sales_performance_report_data(business_id, report_start_date, report_end_date)
+                    st.success("Sales Performance Report Generated!")
+                    st.write(f"Period: {report_start_date.strftime('%Y-%m-%d')} to {report_end_date.strftime('%Y-%m-%d')}")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total Revenue", f"${sales_data['total_revenue']:,.2f}")
+                    col2.metric("Number of Invoices", f"{sales_data['num_invoices']}")
+                    col3.metric("Avg. Invoice Value", f"${sales_data['avg_invoice_value']:,.2f}")
+
+                    st.write(f"**Top Product:** {sales_data['top_product_name']} (Revenue: ${sales_data['top_product_revenue']:,.2f})")
+                    
+                    # Placeholder for download
+                    report_content_for_download = f"""
+                    Sales Performance Report
+                    Period: {report_start_date.strftime('%Y-%m-%d')} to {report_end_date.strftime('%Y-%m-%d')}
+                    Total Revenue: ${sales_data['total_revenue']:,.2f}
+                    Number of Invoices: {sales_data['num_invoices']}
+                    Average Invoice Value: ${sales_data['avg_invoice_value']:,.2f}
+                    Top Product: {sales_data['top_product_name']} (Revenue: ${sales_data['top_product_revenue']:,.2f})
+                    """
+                    st.download_button(
+                        "Download Report (TXT)",
+                        data=report_content_for_download,
+                        file_name=f"Sales_Performance_Report_{report_start_date}_{report_end_date}.txt",
+                        mime="text/plain"
+                    )
+
+                # Keep other reports simulated for now
+                elif report_type == "Marketing ROI (Simulated)":
+                    st.success("Marketing ROI Report generated successfully! (Simulated)")
                     st.write("### Marketing ROI Report")
                     st.write("- Total Spend: $150,000")
                     st.write("- Revenue Generated: $750,000")
                     st.write("- ROI: 5.0x")
-                elif report_type == "Employee Productivity":
+                elif report_type == "Employee Productivity (Simulated)":
+                    st.success("Employee Productivity Report generated successfully! (Simulated)")
                     st.write("### Employee Productivity Report")
                     st.write("- Average Output: 85% of target")
                     st.write("- Top Performer: Sarah Johnson (123% of target)")
                     st.write("- Department Average: Engineering (92%)")
-                else:  # Inventory Analysis
+                else:  # Inventory Analysis (Simulated)
+                    st.success("Inventory Analysis Report generated successfully! (Simulated)")
                     st.write("### Inventory Analysis Report")
                     st.write("- Total Inventory Value: $350,000")
                     st.write("- Slow-moving Items: 15% of stock")
-                    st.write("- Inventory Turnover: 6.5x")
+                    st.write("- Inventory Turnover (from metrics tab): {inventory_turnover_metric['value']}")
                 
-                st.download_button(
-                    "Download Report",
-                    data="Sample report content",
-                    file_name=f"{report_type.replace(' ', '_')}_Report.pdf",
-                    mime="application/pdf"
-                )
+                if report_type != "Sales Performance": # Generic download for simulated reports
+                    st.download_button(
+                        "Download Report (PDF - Simulated)",
+                        data="Sample simulated report content", # In a real app, generate PDF
+                        file_name=f"{report_type.replace(' ', '_')}_Report.pdf",
+                        mime="application/pdf"
+                    )
 
 # AI Market Forecasting Module
 def market_forecasting(business_id, ai_models):
