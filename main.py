@@ -4691,10 +4691,6 @@ def chat_module(business_id, ai_models): # ai_models might not be used directly 
 
 # Main Application
 def main():
-    # Initialize database and AI models
-    init_db()
-    
-    ai_models=load_ai_models()
     
     st.set_page_config(
         page_title="GrowBis", 
@@ -4702,6 +4698,10 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+    # Initialize database and AI models
+    init_db()
+    
+    ai_models=load_ai_models()
     
     # Custom CSS
     st.markdown("""
