@@ -4037,6 +4037,559 @@ def legal_marketplace(business_id, ai_models):
                 st.info("No simulated providers found matching your criteria.")
 
     cur.close(); conn.close()
+def get_financial_performance_data(business_id, num_periods=12, period_type='M'):
+    """
+    Fetches financial performance data (Revenue, Expenses, Profit) for the last num_periods.
+    period_type can be 'M' for Monthly or 'Q' for Quarterly.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    end_date = datetime.now().date()
+    
+    if period_type == 'M':
+        # Use Month Start frequency for easier grouping with DATE_TRUNC
+        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS')
+        period_label_format = '%Y-%m'
+        sql_trunc_period = 'month'
+    elif period_type == 'Q':
+        # Use Quarter Start frequency
+        current_quarter_start = pd.Timestamp(end_date).to_period('Q').start_time.date()
+        dates = pd.date_range(end=current_quarter_start, periods=num_periods, freq='QS')
+        # For label, we'll calculate quarter number manually
+        sql_trunc_period = 'quarter'
+    else: # Default to monthly
+        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS')
+        period_label_format = '%Y-%m'
+        sql_trunc_period = 'month'
+
+    df_data = pd.DataFrame({'PeriodStart': dates})
+    
+    if period_type == 'Q':
+        df_data['PeriodLabel'] = df_data['PeriodStart'].apply(lambda x: f"{x.year}-Q{((x.month-1)//3)+1}")
+    else:
+        df_data['PeriodLabel'] = df_data['PeriodStart'].dt.strftime(period_label_format)
+
+    # Fetch Revenue
+    try:
+        query_revenue = sql.SQL("""
+            SELECT DATE_TRUNC(%s, issue_date) as period_start_db, SUM(total_amount) as revenue
+            FROM invoices
+            WHERE business_id = %s AND issue_date >= %s AND issue_date <= %s
+            GROUP BY period_start_db
+            ORDER BY period_start_db;
+        """)
+        # Ensure dates.min() is a date object
+        min_date_for_query = dates.min().date() if hasattr(dates.min(), 'date') else dates.min()
+        cur.execute(query_revenue, (sql_trunc_period, business_id, min_date_for_query, end_date))
+        revenue_data = cur.fetchall()
+        df_revenue = pd.DataFrame(revenue_data, columns=['PeriodStart', 'Revenue'])
+        if not df_revenue.empty:
+            df_revenue['PeriodStart'] = pd.to_datetime(df_revenue['PeriodStart'])
+            df_data = pd.merge(df_data, df_revenue, on='PeriodStart', how='left')
+        else:
+            df_data['Revenue'] = 0.0
+    except Exception as e:
+        st.error(f"Error fetching revenue data: {e}")
+        df_data['Revenue'] = 0.0
+    df_data['Revenue'] = df_data['Revenue'].fillna(0.0).astype(float)
+
+    # Fetch Expenses (Simplified: using total monthly salaries)
+    # For quarterly, this will be 3x monthly salary.
+    try:
+        cur.execute("SELECT SUM(salary) FROM employees WHERE business_id = %s", (business_id,))
+        total_monthly_salary_tuple = cur.fetchone()
+        total_monthly_salary = float(total_monthly_salary_tuple[0]) if total_monthly_salary_tuple and total_monthly_salary_tuple[0] is not None else 0.0
+        
+        expense_per_period = total_monthly_salary * 3 if period_type == 'Q' else total_monthly_salary
+        df_data['Expenses'] = expense_per_period
+    except Exception as e:
+        st.error(f"Error fetching salary data for expenses: {e}")
+        df_data['Expenses'] = 0.0
+    df_data['Expenses'] = df_data['Expenses'].fillna(0.0).astype(float)
+    
+    df_data['Profit'] = df_data['Revenue'] - df_data['Expenses']
+    
+    cur.close()
+    conn.close()
+    return df_data[['PeriodLabel', 'Revenue', 'Expenses', 'Profit']].rename(columns={'PeriodLabel': 'Period'})
+def calculate_delta(current, previous):
+    if previous == 0: return "N/A" if current == 0 else "New"
+    return f"{(current - previous) / previous * 100:.1f}%"
+def get_inventory_turnover_data(business_id, lookback_days=365):
+    """Calculates Inventory Turnover."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cogs = 0.0
+    current_inventory_value_at_cost = 0.0
+    
+    end_date = datetime.now().date()
+    start_date_cogs = end_date - timedelta(days=lookback_days)
+
+    try:
+        # Fetch all products to get their prices (and estimate cost)
+        cur.execute("SELECT id, price, quantity FROM products WHERE business_id = %s", (business_id,))
+        products_details = cur.fetchall()
+        
+        product_info = {} # {product_id: {'price': selling_price, 'quantity': current_quantity}}
+        for prod_id, price, quantity in products_details:
+            product_info[prod_id] = {'price': float(price) if price else 0.0, 
+                                     'quantity': int(quantity) if quantity else 0}
+
+        # Calculate COGS
+        cur.execute(
+            """SELECT items FROM invoices 
+               WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+            (business_id, start_date_cogs, end_date)
+        )
+        invoices_items_json = cur.fetchall()
+        
+        for items_json_tuple in invoices_items_json:
+            if items_json_tuple and items_json_tuple[0]:
+                try:
+                    # items column is JSONB, psycopg2 might return it as dict/list already
+                    if isinstance(items_json_tuple[0], str):
+                        items_list = json.loads(items_json_tuple[0])
+                    else:
+                        items_list = items_json_tuple[0] # Assuming it's already a list of dicts
+                        
+                    for item_detail in items_list:
+                        product_id = item_detail.get('product_id')
+                        quantity_sold = item_detail.get('quantity', 0)
+                        
+                        if product_id in product_info:
+                            selling_price = product_info[product_id]['price']
+                            cost_price_estimate = selling_price * 0.6 # Assume 60% cost margin
+                            cogs += quantity_sold * cost_price_estimate
+                except json.JSONDecodeError as e:
+                    st.warning(f"Could not decode items JSON: {e} - Data: {items_json_tuple[0][:100]}")
+                except TypeError as e:
+                    st.warning(f"Type error processing items: {e} - Data: {items_json_tuple[0]}")
+
+
+        # Calculate Current Inventory Value at Cost
+        for prod_id, info in product_info.items():
+            cost_price_estimate = info['price'] * 0.6
+            current_inventory_value_at_cost += info['quantity'] * cost_price_estimate
+                
+        if current_inventory_value_at_cost > 0:
+            inventory_turnover_raw = cogs / current_inventory_value_at_cost
+        else:
+            inventory_turnover_raw = 0.0
+
+        # Example target and trend logic (can be refined)
+        target_turnover = 6.0 
+        trend = "neutral" # Default
+        if inventory_turnover_raw > target_turnover * 0.8: trend = "up"
+        elif inventory_turnover_raw < target_turnover * 0.5: trend = "critical_low"
+        else: trend = "down" # Could be neutral if within a range, but simplified here
+
+
+    except Exception as e:
+        st.error(f"Error calculating inventory turnover: {e}")
+        inventory_turnover_raw = 0.0 
+        target_turnover = 6.0
+        trend = "error"
+    finally:
+        cur.close()
+        conn.close()
+        
+    return {
+        "name": "Inventory Turnover",
+        "value": round(inventory_turnover_raw, 1),
+        "target": target_turnover,
+        "trend": trend 
+    }
+def get_customer_lifetime_value_data(business_id):
+    """Calculates average Customer Lifetime Value (CLV)."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    clv_avg = 0.0
+    num_customers = 0
+    try:
+        # Using customer_email to identify unique customers and their total spending
+        cur.execute(
+            """
+            SELECT customer_email, SUM(total_amount) as total_spent
+            FROM invoices
+            WHERE business_id = %s AND customer_email IS NOT NULL AND customer_email != ''
+            GROUP BY customer_email;
+            """, (business_id,)
+        )
+        customer_spending = cur.fetchall()
+        
+        if customer_spending:
+            df_spending = pd.DataFrame(customer_spending, columns=['customer_email', 'total_spent'])
+            df_spending['total_spent'] = df_spending['total_spent'].astype(float)
+            clv_avg = df_spending['total_spent'].mean()
+            num_customers = df_spending['customer_email'].nunique()
+            
+    except Exception as e:
+        st.error(f"Error calculating CLV: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    
+    # Target CLV can be a business goal, placeholder for now
+    target_clv = 1000  # Example target
+    trend = "neutral" # Default
+    if clv_avg > 0: # Only calculate trend if there's a CLV
+        if clv_avg > target_clv * 0.8: trend = "up"
+        elif clv_avg < target_clv * 0.5: trend = "critical_low" # More distinct from just "down"
+        elif clv_avg < target_clv: trend = "down"
+    
+    return {
+        "name": "Avg. Customer Lifetime Value (CLV)",
+        "value": round(clv_avg, 0), # CLV is typically a currency value
+        "target": target_clv,
+        "trend": trend,
+        "unit": "$", # Assuming currency is USD
+        "note": f"Based on {num_customers} unique customers." if num_customers > 0 else "No customer data for CLV."
+    }
+def get_operational_efficiency_trends_data(business_id, num_months=6):
+    """
+    Fetches average project progress for the last num_months to show operational efficiency.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    df_efficiency = pd.DataFrame(columns=["Month", "Efficiency"])
+    
+    try:
+        # Calculate the start date for the lookback period
+        end_date_for_query = datetime.now().date()
+        # To get 'num_months' of data, we need to go back num_months-1 full months, 
+        # and then to the start of that month.
+        # Example: if num_months = 6 and today is 2023-08-15
+        # We want data for Aug, Jul, Jun, May, Apr, Mar
+        # So, start_date_lookback should be 2023-03-01
+        
+        # First day of the current month
+        first_day_current_month = end_date_for_query.replace(day=1)
+        
+        # Go back (num_months - 1) full months
+        start_date_lookback = first_day_current_month
+        for _ in range(num_months - 1):
+            # Go to the last day of the previous month, then the first day of that month
+            last_day_prev_month = start_date_lookback - timedelta(days=1)
+            start_date_lookback = last_day_prev_month.replace(day=1)
+
+        query = sql.SQL("""
+            SELECT 
+                DATE_TRUNC('month', COALESCE(p.end_date, p.start_date)) as project_month, 
+                AVG(p.progress) as avg_progress
+            FROM projects p
+            WHERE p.business_id = %s 
+              AND p.status IN ('In Progress', 'Completed') -- Consider relevant statuses
+              AND COALESCE(p.end_date, p.start_date) >= %s -- Projects active or ending in the period
+              AND p.start_date <= %s -- Projects started before or during the period end
+            GROUP BY project_month
+            HAVING COUNT(p.id) > 0 -- Ensure there are projects in the month to average
+            ORDER BY project_month DESC
+            LIMIT %s; 
+        """)
+        # The LIMIT might be too restrictive if some months have no projects.
+        # A better approach is to generate all months and left-join.
+        # For simplicity with current structure, we'll proceed but note this.
+
+        cur.execute(query, (business_id, start_date_lookback, end_date_for_query, num_months))
+        data = cur.fetchall()
+        
+        if data:
+            df_raw_efficiency = pd.DataFrame(data, columns=["Month", "Efficiency"])
+            df_raw_efficiency["Month"] = pd.to_datetime(df_raw_efficiency["Month"])
+            df_raw_efficiency["Efficiency"] = df_raw_efficiency["Efficiency"].astype(float).round(1)
+            
+            # Create a full date range for the last num_months to ensure all months are present
+            month_series = pd.date_range(end=first_day_current_month, periods=num_months, freq='MS')
+            df_template_months = pd.DataFrame({'Month': month_series})
+
+            # Merge and fill missing values
+            df_efficiency = pd.merge(df_template_months, df_raw_efficiency, on="Month", how="left")
+            df_efficiency["Efficiency"] = df_efficiency["Efficiency"].fillna(0) # Fill months with no projects with 0 efficiency
+            df_efficiency["Month"] = df_efficiency["Month"].dt.strftime('%Y-%m')
+            df_efficiency = df_efficiency.sort_values(by="Month").reset_index(drop=True)
+
+    except Exception as e:
+        st.error(f"Error fetching operational efficiency trends: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return df_efficiency
+
+def get_employee_productivity_score_data(business_id):
+    """Calculates average Employee Productivity Score."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    avg_score = 0.0
+    num_employees_rated = 0
+    try:
+        cur.execute(
+            "SELECT AVG(performance_score), COUNT(id) FROM employees WHERE business_id = %s AND performance_score IS NOT NULL",
+            (business_id,)
+        )
+        result = cur.fetchone()
+        if result and result[0] is not None:
+            avg_score = float(result[0])
+            num_employees_rated = int(result[1] if result[1] is not None else 0) # Ensure count is int
+    except Exception as e:
+        st.error(f"Error fetching employee productivity score: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+    target_score = 8.0 # Assuming score is out of 10
+    trend = "neutral" # Default
+    if num_employees_rated > 0: # Only calculate trend if there are rated employees
+        if avg_score >= target_score * 0.9: trend = "up"
+        elif avg_score < target_score * 0.7: trend = "down" 
+        # Could add more nuanced trends like "critical_low" if avg_score is very low
+    
+    return {
+        "name": "Avg. Employee Productivity Score",
+        "value": round(avg_score, 1) if num_employees_rated > 0 else "N/A",
+        "target": target_score,
+        "trend": trend,
+        "unit": "/10",
+        "note": f"Based on {num_employees_rated} rated employees." if num_employees_rated > 0 else "No rated employees."
+    }
+def get_sales_performance_report_data(business_id, start_date, end_date):
+    """Fetches data for the Sales Performance custom report."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    report = {
+        "total_revenue": 0.0,
+        "top_product_name": "N/A",
+        "top_product_revenue": 0.0,
+        "num_invoices": 0,
+        "avg_invoice_value": 0.0
+    }
+
+    try:
+        # Total Revenue and Number of Invoices
+        cur.execute(
+            """SELECT SUM(total_amount), COUNT(id) FROM invoices
+               WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+            (business_id, start_date, end_date)
+        )
+        result = cur.fetchone()
+        if result:
+            report["total_revenue"] = float(result[0]) if result[0] is not None else 0.0
+            report["num_invoices"] = int(result[1]) if result[1] is not None else 0
+        
+        if report["num_invoices"] > 0:
+            report["avg_invoice_value"] = report["total_revenue"] / report["num_invoices"]
+
+        # Top Product
+        cur.execute(
+            """SELECT items FROM invoices
+               WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+            (business_id, start_date, end_date)
+        )
+        all_items_json_tuples = cur.fetchall()
+        
+        product_sales = {} # {product_name: total_sales_value}
+        for items_json_tuple in all_items_json_tuples:
+            if items_json_tuple and items_json_tuple[0]:
+                try:
+                    if isinstance(items_json_tuple[0], str):
+                        items_list = json.loads(items_json_tuple[0])
+                    else:
+                        items_list = items_json_tuple[0]
+
+                    for item_detail in items_list:
+                        name = item_detail.get("name")
+                        total = item_detail.get("total", 0.0)
+                        if name:
+                            product_sales[name] = product_sales.get(name, 0.0) + float(total)
+                except json.JSONDecodeError as e:
+                    st.warning(f"Could not decode items JSON for top product: {e} - Data: {items_json_tuple[0][:100]}")
+                except TypeError as e:
+                    st.warning(f"Type error processing items for top product: {e} - Data: {items_json_tuple[0]}")
+
+        if product_sales:
+            # Sort products by sales value in descending order
+            sorted_products = sorted(product_sales.items(), key=lambda x: x[1], reverse=True)
+            if sorted_products:
+                report["top_product_name"] = sorted_products[0][0]
+                report["top_product_revenue"] = sorted_products[0][1]
+                # You could extend this to top N products
+                # report["top_products_list"] = sorted_products[:3] 
+
+    except Exception as e:
+        st.error(f"Error generating sales performance report data: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return report
+def get_employee_productivity_report_data(business_id, start_date_filter, end_date_filter):
+    """Fetches data for the Employee Productivity custom report."""
+    # Note: start_date_filter and end_date_filter are for the report's conceptual period.
+    # Employee performance_score is typically a current or recent snapshot.
+    # If you want to filter employees based on join_date or last_appraisal_date within this period,
+    # that logic would need to be added to the SQL query.
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    report = {
+        "avg_score_overall": 0.0,
+        "top_performer_name": "N/A",
+        "top_performer_score": 0.0,
+        "department_scores": [], # List of dicts: {"department": "X", "avg_score": Y}
+        "num_employees_total": 0,
+        "num_employees_rated": 0,
+    }
+
+    try:
+        # Get all employees for total count
+        cur.execute(
+            "SELECT COUNT(id) FROM employees WHERE business_id = %s",
+            (business_id,)
+        )
+        total_emp_result = cur.fetchone()
+        if total_emp_result:
+            report["num_employees_total"] = int(total_emp_result[0])
+
+        # Get rated employees for detailed stats
+        cur.execute(
+            """SELECT name, department, performance_score 
+               FROM employees 
+               WHERE business_id = %s AND performance_score IS NOT NULL""",
+            (business_id,)
+        )
+        employees_data = cur.fetchall()
+        report["num_employees_rated"] = len(employees_data)
+
+        if employees_data:
+            df_employees = pd.DataFrame(employees_data, columns=["name", "department", "performance_score"])
+            df_employees["performance_score"] = pd.to_numeric(df_employees["performance_score"], errors='coerce')
+            
+            # Filter out any rows where performance_score became NaN after coercion (if any)
+            rated_employees_df = df_employees.dropna(subset=['performance_score'])
+            report["num_employees_rated"] = len(rated_employees_df) # Update count after potential dropna
+
+            if not rated_employees_df.empty:
+                report["avg_score_overall"] = round(rated_employees_df["performance_score"].mean(), 1)
+                
+                # Find top performer
+                top_perf_idx = rated_employees_df["performance_score"].idxmax()
+                top_performer = rated_employees_df.loc[top_perf_idx]
+                report["top_performer_name"] = top_performer["name"]
+                report["top_performer_score"] = top_performer["performance_score"]
+                
+                # Calculate average scores by department
+                dept_scores_series = rated_employees_df.groupby("department")["performance_score"].mean().round(1)
+                report["department_scores"] = [{"department": idx, "avg_score": val} for idx, val in dept_scores_series.items()]
+            else: # Handle case where all performance_scores were invalid
+                report["avg_score_overall"] = 0.0
+                report["top_performer_name"] = "N/A"
+                report["top_performer_score"] = 0.0
+                report["department_scores"] = []
+
+
+    except Exception as e:
+        st.error(f"Error generating employee productivity report data: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return report
+def get_inventory_analysis_report_data(business_id, start_date_filter, end_date_filter):
+    """Fetches data for the Inventory Analysis custom report."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    report = {
+        "total_inventory_value_at_price": 0.0,
+        "total_inventory_value_at_cost_est": 0.0,
+        "num_products": 0,
+        "slow_moving_items_count": 0,
+        "top_slow_moving_items": [], # List of dicts {"name": X, "quantity": Y, "days_since_last_sale_est": Z}
+        "inventory_turnover": 0.0 # Default, will be updated
+    }
+    cost_margin = 0.6 # Assumption for cost estimation
+
+    try:
+        # Get inventory turnover first
+        turnover_data = get_inventory_turnover_data(business_id) # Assumes lookback_days default is fine for this context
+        report["inventory_turnover"] = turnover_data.get('value', 0.0)
+
+        # Fetch all products for current value
+        cur.execute(
+            "SELECT id, name, price, quantity FROM products WHERE business_id = %s",
+            (business_id,)
+        )
+        products_data = cur.fetchall()
+        report["num_products"] = len(products_data)
+
+        if products_data:
+            df_products = pd.DataFrame(products_data, columns=["id", "name", "price", "quantity"])
+            df_products["price"] = pd.to_numeric(df_products["price"], errors='coerce').fillna(0)
+            df_products["quantity"] = pd.to_numeric(df_products["quantity"], errors='coerce').fillna(0)
+            
+            df_products["value_at_price"] = df_products["price"] * df_products["quantity"]
+            df_products["value_at_cost_est"] = df_products["value_at_price"] * cost_margin
+            
+            report["total_inventory_value_at_price"] = df_products["value_at_price"].sum()
+            report["total_inventory_value_at_cost_est"] = df_products["value_at_cost_est"].sum()
+
+            # Identify slow-moving items: items with high quantity not sold within the filtered period
+            # This requires sales data from the invoices table within the report's date range.
+            cur.execute(
+                """SELECT items, issue_date FROM invoices 
+                   WHERE business_id = %s AND issue_date BETWEEN %s AND %s""",
+                (business_id, start_date_filter, end_date_filter)
+            )
+            invoices_items_json = cur.fetchall()
+            
+            product_sales_dates = {} # {product_id: last_sale_date_in_period}
+            for items_json_tuple, issue_date_val in invoices_items_json:
+                if items_json_tuple and items_json_tuple[0]:
+                    try:
+                        items_list = json.loads(items_json_tuple[0]) if isinstance(items_json_tuple[0], str) else items_json_tuple[0]
+                        for item_detail in items_list:
+                            product_id = item_detail.get('product_id')
+                            if product_id:
+                                # We only care about sales within the filtered period for this specific "slow-moving" definition
+                                current_last_sale_in_period = product_sales_dates.get(product_id)
+                                if current_last_sale_in_period is None or issue_date_val > current_last_sale_in_period:
+                                    product_sales_dates[product_id] = issue_date_val
+                    except (json.JSONDecodeError, TypeError) as e_json:
+                        st.warning(f"Error processing invoice items for slow-moving check: {e_json}")
+            
+            today = datetime.now().date() # Or use end_date_filter as the "today" for consistency
+            
+            slow_items_list = []
+            # Define "slow-moving" criteria: e.g., quantity > 20 and no sales in the report period
+            quantity_threshold_slow = 20 
+            
+            for index, row in df_products.iterrows():
+                # If a product_id is NOT in product_sales_dates, it means it wasn't sold in the report period.
+                if row['quantity'] > quantity_threshold_slow and row['id'] not in product_sales_dates:
+                    # To estimate days_since_last_sale, we'd need global last sale date, not just in period.
+                    # For this report, "Never in period" is more accurate if it wasn't sold in start_date_filter to end_date_filter
+                    slow_items_list.append({
+                        "name": row["name"], 
+                        "quantity": row["quantity"],
+                        "days_since_last_sale_est": "Never in period" 
+                    })
+            
+            report["slow_moving_items_count"] = len(slow_items_list)
+            # Sort by quantity descending for "top" slow-moving
+            report["top_slow_moving_items"] = sorted(slow_items_list, key=lambda x: x["quantity"], reverse=True)[:5]
+
+    except Exception as e:
+        st.error(f"Error generating inventory analysis report data: {e}")
+        # Ensure all keys are present even on error
+        report.setdefault("total_inventory_value_at_price", 0.0)
+        report.setdefault("total_inventory_value_at_cost_est", 0.0)
+        report.setdefault("num_products", 0)
+        report.setdefault("slow_moving_items_count", 0)
+        report.setdefault("top_slow_moving_items", [])
+        report.setdefault("inventory_turnover", 0.0)
+    finally:
+        cur.close()
+        conn.close()
+    return report
 
 # Enterprise Intelligence Module
 def enterprise_intelligence(business_id, ai_models): 
@@ -4050,6 +4603,274 @@ def enterprise_intelligence(business_id, ai_models):
         "Custom Reports"
     ])
     
+    with tab1:
+        st.subheader("Financial Performance")
+        
+        fin_period_type = st.selectbox("View Financials By:", ["Monthly", "Quarterly"], key="fin_period_type_ei")
+        num_fin_periods = st.slider("Number of Past Periods:", min_value=3, max_value=24, 
+                                    value=12 if fin_period_type == "Monthly" else 8, key="num_fin_periods_ei")
+
+        with st.spinner("Fetching financial data..."):
+            df_finance = get_financial_performance_data(business_id, num_periods=num_fin_periods, period_type=fin_period_type[0])
+        
+        if not df_finance.empty:
+            fig_finance = px.line(
+                df_finance, 
+                x="Period", 
+                y=["Revenue", "Expenses", "Profit"],
+                title=f"{fin_period_type} Financial Performance ({num_fin_periods} Periods)"
+            )
+            st.plotly_chart(fig_finance, use_container_width=True)
+            
+            st.write(f"### Key Financial Metrics (Latest {fin_period_type[:-2]})")
+            latest_period_data = df_finance.iloc[-1]
+            revenue_latest = latest_period_data['Revenue']
+            expenses_latest = latest_period_data['Expenses']
+            profit_latest = latest_period_data['Profit']
+            
+            revenue_prev, expenses_prev, profit_prev = 0.0, 0.0, 0.0
+            delta_label = f"vs Prev. {fin_period_type[:-2]}"
+            if len(df_finance) >= 2:
+                prev_period_data = df_finance.iloc[-2]
+                revenue_prev = prev_period_data['Revenue']
+                expenses_prev = prev_period_data['Expenses']
+                profit_prev = prev_period_data['Profit']
+            else:
+                delta_label = "(No Previous Period Data)"
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(f"Total Revenue", f"${revenue_latest:,.0f}", 
+                         f"{calculate_delta(revenue_latest, revenue_prev)} {delta_label}")
+            with col2:
+                st.metric(f"Total Expenses (Est.)", f"${expenses_latest:,.0f}", 
+                         f"{calculate_delta(expenses_latest, expenses_prev)} {delta_label}")
+                st.caption("Expenses estimated based on total salaries.")
+            with col3:
+                st.metric(f"Net Profit (Est.)", f"${profit_latest:,.0f}", 
+                         f"{calculate_delta(profit_latest, profit_prev)} {delta_label}")
+        else:
+            st.info("No financial data available to display for the selected period.")
+    
+    with tab2:
+        st.subheader("Operational Metrics")
+        
+        operational_metrics_data = []
+        with st.spinner("Fetching operational metrics..."):
+            operational_metrics_data.append(get_inventory_turnover_data(business_id))
+            operational_metrics_data.append(get_customer_lifetime_value_data(business_id))
+            operational_metrics_data.append(get_employee_productivity_score_data(business_id))
+
+            # Metrics that require more data/setup
+            operational_metrics_data.append({"name": "Customer Acquisition Cost (CAC)", "value": "N/A", "target": 120, "trend": "neutral", "unit": "$", "note": "Requires marketing spend data."})
+            operational_metrics_data.append({"name": "Conversion Rate", "value": "N/A", "target": 4.0, "trend": "neutral", "unit": "%", "note": "Requires lead tracking data."})
+            operational_metrics_data.append({"name": "Churn Rate", "value": "N/A", "target": 4.0, "trend": "neutral", "unit": "%", "note": "Requires customer lifecycle data."})
+
+        cols_op = st.columns(3)
+        for i, metric in enumerate(operational_metrics_data):
+            with cols_op[i % 3]:
+                delta_display = ""
+                if isinstance(metric.get('value'), (int, float)) and isinstance(metric.get('target'), (int, float)):
+                    delta_val = metric['value'] - metric['target']
+                    delta_display = f"{delta_val:+.1f} vs target"
+                elif metric.get('trend') and metric['trend'] != "neutral":
+                     delta_display = f"Trend: {metric['trend'].capitalize()}"
+
+                value_display = f"{metric.get('unit', '')}{metric['value']}" if metric.get('unit') == "$" else f"{metric['value']}{metric.get('unit', '')}"
+                if metric['value'] == "N/A": value_display = "N/A"
+
+
+                delta_color_logic = "normal"
+                if metric.get('value') != "N/A" and metric.get('target') is not None:
+                    is_better = False
+                    if metric['name'] in ["Churn Rate", "Customer Acquisition Cost (CAC)"]: # Lower is better
+                        is_better = metric['value'] <= metric['target']
+                    else: # Higher is better
+                        is_better = metric['value'] >= metric['target']
+                    delta_color_logic = "normal" if is_better else "inverse"
+                
+                st.metric(
+                    metric["name"],
+                    value_display,
+                    delta_display,
+                    delta_color=delta_color_logic
+                )
+                if metric.get("note"):
+                    st.caption(metric["note"])
+        
+        st.write("### Operational Efficiency Trends (Project Progress)")
+        num_efficiency_months = st.slider("Months for Efficiency Trend:", min_value=3, max_value=12, value=6, key="num_efficiency_months")
+        with st.spinner("Fetching efficiency trends..."):
+            df_efficiency = get_operational_efficiency_trends_data(business_id, num_months=num_efficiency_months)
+        
+        if not df_efficiency.empty:
+            fig_efficiency = px.line(
+                df_efficiency, 
+                x="Month", 
+                y="Efficiency",
+                title=f"Avg. Project Progress (%) Over Last {num_efficiency_months} Months",
+                markers=True
+            )
+            fig_efficiency.update_yaxes(range=[0, 100])
+            st.plotly_chart(fig_efficiency, use_container_width=True)
+        else:
+            st.info("No project data available for efficiency trends.")
+    
+    with tab3:
+        st.subheader("Custom Reports")
+        
+        report_type = st.selectbox("Select Report Type", [
+            "Sales Performance", 
+            "Employee Productivity", 
+            "Inventory Analysis",
+            "Marketing ROI (Simulated - Requires Data)" 
+        ], key="custom_report_type_ei")
+        
+        # Common time period selection for reports
+        st.write("#### Select Report Period")
+        report_time_period = st.selectbox("Time Period", [
+            "Last 7 Days", "Last 30 Days", "Last 90 Days",
+            "Last Month", "Last Quarter", "Last Year", "Custom Range"
+        ], key="report_time_period_ei")
+        
+        report_start_date, report_end_date = datetime.now().date(), datetime.now().date()
+
+        if report_time_period == "Custom Range":
+            col_sd, col_ed = st.columns(2)
+            with col_sd:
+                report_start_date = st.date_input("Start Date", datetime.now().date() - timedelta(days=30), key="report_sd_ei")
+            with col_ed:
+                report_end_date = st.date_input("End Date", datetime.now().date(), key="report_ed_ei")
+        else:
+            today = datetime.now().date()
+            if report_time_period == "Last 7 Days": report_start_date = today - timedelta(days=6)
+            elif report_time_period == "Last 30 Days": report_start_date = today - timedelta(days=29)
+            elif report_time_period == "Last 90 Days": report_start_date = today - timedelta(days=89)
+            elif report_time_period == "Last Month":
+                end_of_last_month = today.replace(day=1) - timedelta(days=1)
+                report_start_date, report_end_date = end_of_last_month.replace(day=1), end_of_last_month
+            elif report_time_period == "Last Quarter":
+                current_q_start = pd.Timestamp(today).to_period('Q').start_time.date()
+                report_end_date = current_q_start - timedelta(days=1)
+                report_start_date = pd.Timestamp(report_end_date).to_period('Q').start_time.date()
+            elif report_time_period == "Last Year":
+                report_start_date = today.replace(year=today.year - 1, month=1, day=1)
+                report_end_date = today.replace(year=today.year - 1, month=12, day=31)
+            
+            if report_time_period not in ["Last Month", "Last Quarter", "Last Year", "Custom Range"]:
+                 report_end_date = today
+        
+        st.info(f"Report period: {report_start_date.strftime('%Y-%m-%d')} to {report_end_date.strftime('%Y-%m-%d')}")
+
+        if st.button("Generate Report", key="generate_custom_report_ei"):
+            with st.spinner(f"Generating {report_type} report..."):
+                report_content_for_download = f"Report Type: {report_type}\nPeriod: {report_start_date} to {report_end_date}\n\n"
+                file_name_prefix = report_type.replace(" ", "_").split("(")[0].strip()
+
+                if report_type == "Sales Performance":
+                    sales_data = get_sales_performance_report_data(business_id, report_start_date, report_end_date)
+                    st.success("Sales Performance Report Generated!")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total Revenue", f"${sales_data['total_revenue']:,.2f}")
+                    col2.metric("Number of Invoices", f"{sales_data['num_invoices']}")
+                    col3.metric("Avg. Invoice Value", f"${sales_data['avg_invoice_value']:,.2f}")
+                    st.write(f"**Top Product:** {sales_data['top_product_name']} (Revenue: ${sales_data['top_product_revenue']:,.2f})")
+                    
+                    report_content_for_download += (
+                        f"Total Revenue: ${sales_data['total_revenue']:,.2f}\n"
+                        f"Number of Invoices: {sales_data['num_invoices']}\n"
+                        f"Average Invoice Value: ${sales_data['avg_invoice_value']:,.2f}\n"
+                        f"Top Product: {sales_data['top_product_name']} (Revenue: ${sales_data['top_product_revenue']:,.2f})\n"
+                    )
+
+                elif report_type == "Employee Productivity":
+                    emp_prod_data = get_employee_productivity_report_data(business_id, report_start_date, report_end_date)
+                    st.success("Employee Productivity Report Generated!")
+                    st.metric("Overall Avg. Performance Score", f"{emp_prod_data['avg_score_overall']}/10", 
+                              help=f"Based on {emp_prod_data['num_employees_rated']} of {emp_prod_data['num_employees_total']} employees.")
+                    st.write(f"**Top Performer:** {emp_prod_data['top_performer_name']} (Score: {emp_prod_data['top_performer_score']}/10)")
+                    
+                    report_content_for_download += (
+                        f"Overall Average Performance Score: {emp_prod_data['avg_score_overall']}/10\n"
+                        f"Total Employees: {emp_prod_data['num_employees_total']}, Rated: {emp_prod_data['num_employees_rated']}\n"
+                        f"Top Performer: {emp_prod_data['top_performer_name']} (Score: {emp_prod_data['top_performer_score']}/10)\n\n"
+                        "Department Average Scores:\n"
+                    )
+                    if emp_prod_data['department_scores']:
+                        st.write("##### Department Average Scores:")
+                        for dept in emp_prod_data['department_scores']:
+                            st.write(f"- {dept['department']}: {dept['avg_score']}/10")
+                            report_content_for_download += f"- {dept['department']}: {dept['avg_score']}/10\n"
+                    else:
+                        st.write("No department scores available.")
+                        report_content_for_download += "No department scores available.\n"
+
+                elif report_type == "Inventory Analysis":
+                    inv_analysis_data = get_inventory_analysis_report_data(business_id, report_start_date, report_end_date)
+                    st.success("Inventory Analysis Report Generated!")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total Inventory Value (Selling Price)", f"${inv_analysis_data['total_inventory_value_at_price']:,.2f}")
+                    col2.metric("Est. Inventory Value (Cost)", f"${inv_analysis_data['total_inventory_value_at_cost_est']:,.2f}", help="Estimated at 60% of selling price.")
+                    col3.metric("Inventory Turnover", f"{inv_analysis_data['inventory_turnover']}x")
+                    
+                    st.metric("Number of Products", inv_analysis_data['num_products'])
+                    st.metric("Slow-Moving Items Count", inv_analysis_data['slow_moving_items_count'], help=f"Items with >20 quantity and no sales in the last 90 days within the period {report_start_date} to {report_end_date}.")
+
+                    report_content_for_download += (
+                        f"Total Inventory Value (Selling Price): ${inv_analysis_data['total_inventory_value_at_price']:,.2f}\n"
+                        f"Estimated Inventory Value (Cost): ${inv_analysis_data['total_inventory_value_at_cost_est']:,.2f}\n"
+                        f"Inventory Turnover: {inv_analysis_data['inventory_turnover']}x\n"
+                        f"Number of Products: {inv_analysis_data['num_products']}\n"
+                        f"Slow-Moving Items Count: {inv_analysis_data['slow_moving_items_count']}\n\n"
+                        "Top Slow-Moving Items (Name, Current Quantity, Days Since Last Sale in Period):\n"
+                    )
+                    if inv_analysis_data['top_slow_moving_items']:
+                        st.write("##### Top Slow-Moving Items (Max 5 Shown):")
+                        for item in inv_analysis_data['top_slow_moving_items']:
+                            st.write(f"- {item['name']} (Qty: {item['quantity']}, Last Sale: {item['days_since_last_sale_est']} days ago)")
+                            report_content_for_download += f"- {item['name']} (Qty: {item['quantity']}, Last Sale: {item['days_since_last_sale_est']} days ago)\n"
+                    else:
+                        st.write("No significant slow-moving items identified based on current criteria.")
+                        report_content_for_download += "No significant slow-moving items identified.\n"
+                
+                elif report_type == "Marketing ROI (Simulated - Requires Data)":
+                    st.warning("Marketing ROI calculation requires dedicated marketing spend and campaign data, which is not yet implemented in the database.")
+                    st.info("Displaying simulated data as a placeholder:")
+                    st.write("### Marketing ROI Report (Simulated)")
+                    st.write("- Total Marketing Spend: $25,000")
+                    st.write("- Revenue Attributed to Marketing: $125,000")
+                    st.write("- ROI: 5.0x")
+                    st.write("- Top Performing Channel: Social Media Ads")
+                    report_content_for_download += (
+                        "Marketing ROI Report (Simulated - Requires Data Integration)\n"
+                        "Total Marketing Spend: $25,000\n"
+                        "Revenue Attributed to Marketing: $125,000\n"
+                        "ROI: 5.0x\n"
+                    )
+                
+                st.download_button(
+                    "Download Report (TXT)",
+                    data=report_content_for_download,
+                    file_name=f"{file_name_prefix}_Report_{report_start_date}_{report_end_date}.txt",
+                    mime="text/plain",
+                    key=f"download_{file_name_prefix}_ei"
+                )
+
+# Enterprise Intelligence Module
+def enterprise_intelligence(business_id, ai_models): 
+    """Streamlit module for Enterprise Intelligence Dashboards."""
+    st.header("📊 Enterprise Intelligence Dashboards")
+    st.info("Provides key business metrics and reports based on your data.")
+    
+    tab1, tab2, tab3 = st.tabs([
+        "Financial Performance", 
+        "Operational Metrics", 
+        "Custom Reports"
+    ])
+    
+    conn = get_db_connection()  # Initialize connection here
+    cur = conn.cursor()    
     with tab1:
         st.subheader("Financial Performance")
         
