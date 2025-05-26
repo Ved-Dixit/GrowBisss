@@ -5132,7 +5132,9 @@ def market_forecasting(business_id, ai_models):
     st.info("Generates market forecasts using AI based on general trends and your inputs.")
     
     tab1, tab2 = st.tabs(["Trend Analysis", "Predictive Insights"])
-    
+
+    conn = get_db_connection()  # Initialize connection here
+    cur = conn.cursor()  
     with tab1:
         st.subheader("Market Trend Analysis")
         
