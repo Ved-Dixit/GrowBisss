@@ -4423,7 +4423,7 @@ def main():
         "IPO & Cap Table Management",
         "Legal, CA & Insurance Marketplace",
         "Enterprise Intelligence Dashboards",
-        "AI Market Forecasting"
+        "AI Market Forecasting",
         "Messaging"
     ]
     
