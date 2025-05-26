@@ -1192,7 +1192,7 @@ def generate_invoice_pdf(business_id, invoice_number, customer_name, customer_em
     pdf.set_font("Arial", "", 10)
     pdf.multi_cell(0, 7, "Payment Terms: Due upon receipt.\nPayment Methods: [List your payment methods]")
     
-    return pdf.output(dest="S").encode("latin-1")
+    return pdf.output(dest="E").encode("latin-1")
 
 
 # HR Tools Module
