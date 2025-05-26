@@ -33,9 +33,10 @@ def get_db_connection():
     conn = psycopg2.connect(
         dbname = "railway",
         user = "postgres",
-        password = "ILhqoTVXuEsHXFhPwhdXKblKuwTTPmlw",
-        host = "ballast.proxy.rlwy.net",
-        port = "33111"
+        password = "AtyqCUijTHXVXFHkNTnVXzwEwccYCfhr",
+        host = "switchyard.proxy.rlwy.net",
+        port = "36704"
+
     )
     return conn
 
