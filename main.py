@@ -3744,17 +3744,27 @@ def ipo_module(business_id, ai_models):
                     if comm.get('notes'): st.write(f"**Notes:** {comm['notes']}")
 
                     # Allow updating status (Simulated)
-                    comm_statuses = ["Scheduled", "Completed", "Cancelled", "Postponed"]
+                    # Ensure all statuses from initial data are in this list
+                    comm_statuses = ["Scheduled", "Completed", "Cancelled", "Postponed", "Sent"] # Added "Sent"
+                    
+                    current_status_index = 0 # Default to first option
+                    try:
+                        current_status_index = comm_statuses.index(comm['status'])
+                    except ValueError:
+                        st.warning(f"Status '{comm['status']}' not in predefined list for communication ID {comm['id']}. Defaulting selection.")
+                        # Optionally, add the unknown status to the list dynamically if desired, or log this.
+                        # For now, it will default to "Scheduled" if the status is unknown.
+
                     new_status = st.selectbox(
                         "Update Status",
                         comm_statuses,
-                        index=comm_statuses.index(comm['status']),
+                        index=current_status_index, # Use the found or default index
                         key=f"update_comm_status_{comm['id']}"
                     )
                     if new_status != comm['status']:
                         comm['status'] = new_status
                         st.success(f"Status for {comm['type']} on {comm['date']} updated to {new_status}!")
-                        st.rerun() # Rerun to update display
+                        st.rerun()
 
         else:
             st.info("No simulated investor communications recorded yet.")
