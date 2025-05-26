@@ -27,11 +27,11 @@ from datetime import datetime, timedelta, timezone, date
 # Database Connection
 def get_db_connection():
     conn = psycopg2.connect(
-        dbname = "railway",
-        user = "postgres",
-        password = "ILhqoTVXuEsHXFhPwhdXKblKuwTTPmlw",
-        host = "ballast.proxy.rlwy.net",
-        port = "33111"
+        DB_NAME='railway'
+        DB_USER='postgres'
+        DB_PASSWORD='osCXjmYcfKnvBjhcKeEJYeYMTbUqrsvw'
+        DB_HOST='yamabiko.proxy.rlwy.net'
+        DB_PORT='34462'
     )
     return conn
 
