@@ -1192,7 +1192,22 @@ def generate_invoice_pdf(business_id, invoice_number, customer_name, customer_em
     pdf.set_font("Arial", "", 10)
     pdf.multi_cell(0, 7, "Payment Terms: Due upon receipt.\nPayment Methods: [List your payment methods]")
     
-    return pdf.output(dest="E").encode("latin-1")
+    pdf_output_data = pdf.output(dest="S")
+
+    if isinstance(pdf_output_data, str):
+        # This is the expected path if FPDF.output(dest="S") returns a string
+        return pdf_output_data.encode("latin-1")
+    elif isinstance(pdf_output_data, bytearray):
+        # This handles the case where it might return a bytearray
+        return bytes(pdf_output_data)
+    elif isinstance(pdf_output_data, bytes):
+        # If it already returns bytes
+        return pdf_output_data
+    else:
+        # Fallback for unexpected types, though unlikely for FPDF
+        st.error(f"FPDF output returned an unexpected type: {type(pdf_output_data)}. Attempting to convert.")
+        return str(pdf_output_data).encode("latin-1")
+
 
 
 # HR Tools Module
