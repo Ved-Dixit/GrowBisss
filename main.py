@@ -27,11 +27,11 @@ from datetime import datetime, timedelta, timezone, date
 # Database Connection
 def get_db_connection():
     conn = psycopg2.connect(
-        dbname='railway',
-        user='postgres',
-        password='osCXjmYcfKnvBjhcKeEJYeYMTbUqrsvw',
-        host='yamabiko.proxy.rlwy.net',
-        port='34462'
+        dbname = "railway",
+        user = "postgres",
+        password = "ILhqoTVXuEsHXFhPwhdXKblKuwTTPmlw",
+        host = "ballast.proxy.rlwy.net",
+        port = "33111"
     )
     return conn
 
@@ -68,6 +68,7 @@ def init_db():
             -- CREATE INDEX IF NOT EXISTS idx_messages_conversation_pair2 ON messages (receiver_type, receiver_id, sender_type, sender_id, created_at);
         )
         """,
+
         """
         CREATE TABLE IF NOT EXISTS products (
             id SERIAL PRIMARY KEY,
@@ -258,6 +259,45 @@ def init_db():
             items JSONB
         )
         """,
+         """
+        CREATE TABLE IF NOT EXISTS investors (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE NULL, 
+            name VARCHAR(100) NOT NULL,
+            firm VARCHAR(100),
+            email VARCHAR(100) UNIQUE NOT NULL, 
+            password_hash VARCHAR(255),         
+            investment_focus VARCHAR(200),
+            portfolio_companies TEXT[],
+            last_contact DATE,
+            profile_description TEXT,          
+            website_url VARCHAR(255),         
+            linkedin_profile VARCHAR(255),     
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+        )
+        """,
+        # ...
+        """
+        CREATE TABLE IF NOT EXISTS service_providers (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE NULL, 
+            name VARCHAR(100) NOT NULL,
+            service_type VARCHAR(100) NOT NULL, 
+            email VARCHAR(100) UNIQUE NOT NULL, 
+            password_hash VARCHAR(255),    
+            contact_email VARCHAR(100),   
+            rating DECIMAL(3,1),
+            experience_years INTEGER,
+            pricing TEXT,
+            availability BOOLEAN,
+            profile_description TEXT,       
+            specializations TEXT[],       
+            office_address TEXT,          
+            website_url VARCHAR(255),     
+            linkedin_profile VARCHAR(255),   
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+        )
+        """,
         """
         CREATE TABLE IF NOT EXISTS user_sessions (
             id SERIAL PRIMARY KEY,
@@ -387,112 +427,438 @@ def load_ai_models():
     models = AIModels()
     return models
 
-# Authentication functions
-def login_page():
-    st.title("GrowBis Business Login")
-    
-    tab1, tab2 = st.tabs(["Login", "Register"])
-    
-    with tab1:
-        with st.form("login_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            
-            if st.form_submit_button("Login"):
+def investor_registration_page():
+    st.subheader("Investor Registration")
+    with st.form("investor_register_form"):
+        name = st.text_input("Full Name / Firm Name")
+        email = st.text_input("Login Email")
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        firm = st.text_input("Firm (if applicable)")
+        investment_focus = st.text_area("Investment Focus (e.g., SaaS, Fintech, Early Stage)")
+        profile_description = st.text_area("Brief Profile / About Us")
+        website_url = st.text_input("Website URL (Optional)")
+        linkedin_profile = st.text_input("LinkedIn Profile URL (Optional)")
+
+        submitted = st.form_submit_button("Register as Investor")
+        if submitted:
+            if password != confirm_password:
+                st.error("Passwords do not match.")
+            elif not name or not email or not password:
+                st.error("Name, Email, and Password are required.")
+            else:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                
-                cur.execute("SELECT id, password_hash FROM businesses WHERE email = %s", (email,))
-                result = cur.fetchone()
-                
-                if result and verify_password(password, result[1]):
-                    business_id = result[0]
-                    token = generate_jwt(business_id)
-                    
-                    # Store session in database
-                    expires_at = datetime.utcnow() + timedelta(hours=24)
+                try:
+                    hashed_pw = hash_password(password)
                     cur.execute(
-                        "INSERT INTO user_sessions (business_id, session_token, expires_at) VALUES (%s, %s, %s)",
-                        (business_id, token, expires_at)
+                        """INSERT INTO investors (name, email, password_hash, firm, investment_focus, profile_description, website_url, linkedin_profile)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (name, email, hashed_pw, firm, investment_focus, profile_description, website_url, linkedin_profile)
                     )
+                    investor_id = cur.fetchone()[0]
                     conn.commit()
-                    
-                    st.session_state.token = token
-                    st.session_state.business_id = business_id
-                    st.rerun()
-                else:
-                    st.error("Invalid email or password")
-                
-                cur.close()
-                conn.close()
-    
-    with tab2:
-        with st.form("register_form"):
-            name = st.text_input("Business Name")
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            confirm_password = st.text_input("Confirm Password", type="password")
-            
-            if st.form_submit_button("Register"):
-                if password != confirm_password:
-                    st.error("Passwords don't match")
-                else:
-                    conn = get_db_connection()
-                    cur = conn.cursor()
-                    
-                    try:
-                        password_hash = hash_password(password)
-                        cur.execute(
-                            "INSERT INTO businesses (name, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
-                            (name, email, password_hash)
-                        )
-                        business_id = cur.fetchone()[0]
-                        conn.commit()
-                        
-                        token = generate_jwt(business_id)
-                        expires_at = datetime.utcnow() + timedelta(hours=24)
-                        cur.execute(
-                            "INSERT INTO user_sessions (business_id, session_token, expires_at) VALUES (%s, %s, %s)",
-                            (business_id, token, expires_at)
-                        )
-                        conn.commit()
-                        
-                        st.session_state.token = token
-                        st.session_state.business_id = business_id
-                        st.success("Registration successful! You are now logged in.")
-                        st.rerun()
-                    except psycopg2.IntegrityError:
-                        st.error("Email already registered")
-                    except Exception as e:
-                        st.error(f"Registration failed: {e}")
-                    finally:
-                        cur.close()
-                        conn.close()
+                    st.success("Investor registration successful! You can now login.")
+                    st.session_state.user_type_for_login = 'investor' # Hint for login page
+                    st.session_state.registered_email = email # Pre-fill login
+                    # Ideally, redirect to login or auto-login. For now, message.
+                except psycopg2.IntegrityError:
+                    st.error("This email is already registered as an investor.")
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+                finally:
+                    cur.close()
+                    conn.close()
 
-def check_auth():
-    if 'token' not in st.session_state:
-        return False
-    
-    business_id = verify_jwt(st.session_state.token)
-    if not business_id:
-        return False
-    
+def service_provider_registration_page():
+    st.subheader("Service Provider Registration (CA, Legal, etc.)")
+    with st.form("service_provider_register_form"):
+        name = st.text_input("Full Name / Firm Name")
+        email = st.text_input("Login Email")
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        
+        service_type_options = ["legal", "ca", "insurance", "consulting", "other"] # Add more as needed
+        service_type = st.selectbox("Primary Service Type", service_type_options)
+        
+        contact_email_public = st.text_input("Public Contact Email (Optional, if different from login)")
+        profile_description = st.text_area("Profile / Service Description")
+        specializations_str = st.text_input("Specializations (comma-separated, e.g., Corporate Law, Tax Audit)")
+        experience_years = st.number_input("Years of Experience", min_value=0, step=1)
+        office_address = st.text_area("Office Address (Optional)")
+        website_url = st.text_input("Website URL (Optional)")
+        linkedin_profile = st.text_input("LinkedIn Profile URL (Optional)")
+
+        submitted = st.form_submit_button("Register as Service Provider")
+        if submitted:
+            if password != confirm_password:
+                st.error("Passwords do not match.")
+            elif not name or not email or not password or not service_type:
+                st.error("Name, Email, Password, and Service Type are required.")
+            else:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                try:
+                    hashed_pw = hash_password(password)
+                    specializations_list = [s.strip() for s in specializations_str.split(',') if s.strip()]
+                    cur.execute(
+                        """INSERT INTO service_providers 
+                           (name, email, password_hash, service_type, contact_email, profile_description, specializations, experience_years, office_address, website_url, linkedin_profile)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (name, email, hashed_pw, service_type, contact_email_public or email, profile_description, specializations_list, experience_years, office_address, website_url, linkedin_profile)
+                    )
+                    provider_id = cur.fetchone()[0]
+                    conn.commit()
+                    st.success("Service Provider registration successful! You can now login.")
+                    st.session_state.user_type_for_login = 'service_provider'
+                    st.session_state.registered_email = email
+                except psycopg2.IntegrityError:
+                    st.error("This email is already registered as a service provider.")
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+                finally:
+                    cur.close()
+                    conn.close()
+
+def investor_portal(investor_id, ai_models):
     conn = get_db_connection()
     cur = conn.cursor()
+    cur.execute("SELECT name, email, firm, investment_focus, profile_description, website_url, linkedin_profile FROM investors WHERE id = %s", (investor_id,))
+    investor_data = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not investor_data:
+        st.error("Investor profile not found.")
+        return
+
+    st.title(f"🚀 Investor Portal: {investor_data[0]}")
     
+    tab1, tab2 = st.tabs(["My Profile", "Messages"])
+
+    with tab1:
+        st.subheader("My Profile")
+        st.write(f"**Name/Firm:** {investor_data[0]}")
+        st.write(f"**Login Email:** {investor_data[1]}")
+        st.write(f"**Registered Firm:** {investor_data[2] or 'N/A'}")
+        st.write(f"**Investment Focus:** {investor_data[3] or 'N/A'}")
+        st.write(f"**Profile Description:** {investor_data[4] or 'N/A'}")
+        st.write(f"**Website:** {investor_data[5] or 'N/A'}")
+        st.write(f"**LinkedIn:** {investor_data[6] or 'N/A'}")
+        # Add profile edit form here later
+
+    with tab2:
+        st.subheader("Messages from Businesses")
+        # Simplified chat view for investor (can be expanded like business chat_module)
+        # For now, just show incoming messages. Replies would need the full chat UI.
+        # This requires the investor to be the "receiver" in the messages table.
+        chat_module_for_entity(entity_id=investor_id, entity_type='investor', entity_name=investor_data[0], ai_models=ai_models)
+
+
+def service_provider_portal(provider_id, ai_models):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT name, email, service_type, contact_email, profile_description, specializations, experience_years, office_address, website_url, linkedin_profile FROM service_providers WHERE id = %s", (provider_id,))
+    provider_data = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not provider_data:
+        st.error("Service Provider profile not found.")
+        return
+
+    st.title(f"🚀 {provider_data[2].capitalize()} Portal: {provider_data[0]}")
+
+    tab1, tab2 = st.tabs(["My Profile", "Messages"])
+    with tab1:
+        st.subheader("My Profile")
+        st.write(f"**Name/Firm:** {provider_data[0]}")
+        st.write(f"**Login Email:** {provider_data[1]}")
+        st.write(f"**Service Type:** {provider_data[2].capitalize()}")
+        st.write(f"**Public Contact Email:** {provider_data[3] or 'N/A'}")
+        st.write(f"**Profile Description:** {provider_data[4] or 'N/A'}")
+        st.write(f"**Specializations:** {', '.join(provider_data[5]) if provider_data[5] else 'N/A'}")
+        st.write(f"**Experience:** {provider_data[6] or 'N/A'} years")
+        st.write(f"**Office Address:** {provider_data[7] or 'N/A'}")
+        st.write(f"**Website:** {provider_data[8] or 'N/A'}")
+        st.write(f"**LinkedIn:** {provider_data[9] or 'N/A'}")
+        # Add profile edit form here later
+        
+    with tab2:
+        st.subheader("Messages from Businesses")
+        chat_module_for_entity(entity_id=provider_id, entity_type='service_provider', entity_name=provider_data[0], ai_models=ai_models)
+
+# Generic Chat Module for Non-Business Entities
+def chat_module_for_entity(entity_id, entity_type, entity_name, ai_models):
+    st.header(f"💬 Messaging for {entity_name}")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # State variables
+    if f'chat_partner_type_{entity_type}_{entity_id}' not in st.session_state:
+        st.session_state[f'chat_partner_type_{entity_type}_{entity_id}'] = None # Will always be 'business' for them
+    if f'chat_partner_id_{entity_type}_{entity_id}' not in st.session_state:
+        st.session_state[f'chat_partner_id_{entity_type}_{entity_id}'] = None
+    if f'chat_partner_name_{entity_type}_{entity_id}' not in st.session_state:
+        st.session_state[f'chat_partner_name_{entity_type}_{entity_id}'] = None
+
+    # --- Sidebar: List businesses they have chatted with ---
+    st.sidebar.subheader("Conversations")
     try:
-        cur.execute(
-            "SELECT 1 FROM user_sessions WHERE session_token = %s AND expires_at > NOW()",
-            (st.session_state.token,)
+        # Businesses that have sent a message to this entity OR this entity has sent a message to
+        query_partners = """
+        SELECT DISTINCT sender_id, sender_type FROM messages
+        WHERE receiver_id = %(current_id)s AND receiver_type = %(current_type)s AND sender_type = 'business'
+        UNION
+        SELECT DISTINCT receiver_id, receiver_type FROM messages
+        WHERE sender_id = %(current_id)s AND sender_type = %(current_type)s AND receiver_type = 'business';
+        """
+        cur.execute(query_partners, {'current_id': entity_id, 'current_type': entity_type})
+        partners_db = cur.fetchall()
+        
+        partner_options = {} # Display Name: (db_type, id)
+        for p_id, p_type_db in partners_db: # p_type_db will be 'business'
+            if p_type_db == 'business':
+                cur.execute("SELECT name FROM businesses WHERE id = %s", (p_id,))
+                name_result = cur.fetchone()
+                if name_result:
+                    partner_display_name = f"{name_result[0]} (Business)"
+                    partner_options[partner_display_name] = ('business', p_id)
+        
+        selected_partner_display = st.sidebar.selectbox(
+            "Select Business to Chat With:",
+            options=["-- Select --"] + list(partner_options.keys()),
+            key=f"select_chat_partner_for_{entity_type}_{entity_id}"
         )
-        valid = cur.fetchone() is not None
-    except:
-        valid = False
-    finally:
-        cur.close()
-        conn.close()
+
+        if selected_partner_display != "-- Select --":
+            partner_db_type, partner_id_val = partner_options[selected_partner_display]
+            st.session_state[f'chat_partner_type_{entity_type}_{entity_id}'] = partner_db_type
+            st.session_state[f'chat_partner_id_{entity_type}_{entity_id}'] = partner_id_val
+            st.session_state[f'chat_partner_name_{entity_type}_{entity_id}'] = selected_partner_display.split(" (")[0]
+            st.rerun()
+
+    except Exception as e_partner_list:
+        st.sidebar.error(f"Error loading chat partners: {e_partner_list}")
+
+    # --- Main Chat Area ---
+    partner_selected_id = st.session_state.get(f'chat_partner_id_{entity_type}_{entity_id}')
+    partner_selected_name = st.session_state.get(f'chat_partner_name_{entity_type}_{entity_id}')
+
+    if partner_selected_id and partner_selected_name:
+        st.subheader(f"Chat with {partner_selected_name} (Business)")
+        
+        # Mark messages as read (messages sent BY the business partner TO this entity)
+        try:
+            update_read_query = """
+                UPDATE messages SET read_at = CURRENT_TIMESTAMP
+                WHERE receiver_type = %s AND receiver_id = %s
+                  AND sender_type = 'business' AND sender_id = %s
+                  AND read_at IS NULL;
+            """
+            cur.execute(update_read_query, (entity_type, entity_id, partner_selected_id))
+            conn.commit()
+        except Exception as e_read_update:
+            st.warning(f"Could not update read status: {e_read_update}")
+
+        # Fetch messages
+        try:
+            query_messages = """
+                SELECT sender_type, sender_id, content, created_at, read_at
+                FROM messages
+                WHERE
+                    (sender_type = %(current_entity_type)s AND sender_id = %(current_entity_id)s AND receiver_type = 'business' AND receiver_id = %(partner_business_id)s)
+                OR
+                    (sender_type = 'business' AND sender_id = %(partner_business_id)s AND receiver_type = %(current_entity_type)s AND receiver_id = %(current_entity_id)s)
+                ORDER BY created_at ASC;
+            """
+            cur.execute(query_messages, {
+                'current_entity_type': entity_type, 'current_entity_id': entity_id,
+                'partner_business_id': partner_selected_id
+            })
+            messages = cur.fetchall()
+            
+            chat_container = st.container()
+            with chat_container:
+                if not messages: st.info("No messages yet. Start the conversation!")
+                for msg_sender_type, msg_sender_id, msg_content, msg_created_at, msg_read_at in messages:
+                    timestamp_str = msg_created_at.strftime('%Y-%m-%d %H:%M')
+                    if msg_sender_type == entity_type and msg_sender_id == entity_id: # Message sent by this entity
+                        read_indicator = " (Read)" if msg_read_at else ""
+                        st.markdown(f"<div style='text-align: right; margin-left: 20%; margin-bottom: 5px; padding: 10px; background-color: #DCF8C6; border-radius: 10px;'><b>You ({entity_name})</b> ({timestamp_str}){read_indicator}:<br>{msg_content}</div>", unsafe_allow_html=True)
+                    else: # Message received from business
+                        st.markdown(f"<div style='text-align: left; margin-right: 20%; margin-bottom: 5px; padding: 10px; background-color: #FFFFFF; border-radius: 10px; border: 1px solid #E0E0E0;'><b>{partner_selected_name}</b> ({timestamp_str}):<br>{msg_content}</div>", unsafe_allow_html=True)
+            if messages:
+                 st.markdown(f"<script>window.scrollTo(0,document.body.scrollHeight);</script>", unsafe_allow_html=True)
+
+        except Exception as e_fetch:
+            st.error(f"Error fetching messages: {e_fetch}")
+
+        # Message input
+        with st.form(f"new_message_form_{entity_type}_{entity_id}", clear_on_submit=True):
+            new_message = st.text_area("Your reply:", key=f"new_message_content_{entity_type}_{entity_id}_{partner_selected_id}")
+            send_reply_btn = st.form_submit_button("Send Reply")
+            if send_reply_btn and new_message.strip():
+                try:
+                    cur.execute(
+                        "INSERT INTO messages (sender_type, sender_id, receiver_type, receiver_id, content) VALUES (%s, %s, %s, %s, %s)",
+                        (entity_type, entity_id, 'business', partner_selected_id, new_message.strip())
+                    )
+                    conn.commit()
+                    st.rerun()
+                except Exception as e_send:
+                    st.error(f"Error sending reply: {e_send}")
+            elif send_reply_btn and not new_message.strip():
+                st.warning("Message cannot be empty.")
+    else:
+        st.info("Select a business from the sidebar to view or continue a conversation.")
     
-    return valid
+    cur.close()
+    conn.close()
+
+# Authentication functions
+def login_page():
+    st.title("GrowBis Login")
+
+    # User type selection
+    login_user_type = st.radio(
+        "Login as:",
+        ('Business', 'Investor', 'Service Provider'),
+        key='login_user_type_selection',
+        horizontal=True,
+        index=0 if 'user_type_for_login' not in st.session_state else ['Business', 'Investor', 'Service Provider'].index(st.session_state.user_type_for_login.capitalize()) if st.session_state.user_type_for_login else 0
+    )
+
+    default_email = st.session_state.get('registered_email', "")
+
+    if login_user_type == 'Business':
+        st.subheader("Business Login")
+        with st.form("business_login_form"):
+            email = st.text_input("Email", value=default_email if st.session_state.get('user_type_for_login') == 'business' else "")
+            password = st.text_input("Password", type="password")
+            
+            if st.form_submit_button("Login as Business"):
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT id, password_hash, name FROM businesses WHERE email = %s", (email,))
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if result and verify_password(password, result[1]):
+                    st.session_state.token = generate_jwt(result[0]) # Using business_id for JWT for now
+                    st.session_state.business_id = result[0]
+                    st.session_state.user_type = 'business'
+                    st.session_state.user_name = result[2]
+                    st.session_state.logged_in_entity_id = result[0]
+                    if 'registered_email' in st.session_state: del st.session_state.registered_email
+                    if 'user_type_for_login' in st.session_state: del st.session_state.user_type_for_login
+                    st.rerun()
+                else:
+                    st.error("Invalid email or password for Business.")
+    
+    elif login_user_type == 'Investor':
+        st.subheader("Investor Login")
+        with st.form("investor_login_form"):
+            email = st.text_input("Email", value=default_email if st.session_state.get('user_type_for_login') == 'investor' else "")
+            password = st.text_input("Password", type="password")
+
+            if st.form_submit_button("Login as Investor"):
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT id, password_hash, name FROM investors WHERE email = %s", (email,))
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+
+                if result and verify_password(password, result[1]):
+                    st.session_state.user_type = 'investor'
+                    st.session_state.logged_in_entity_id = result[0] # This is investor_id
+                    st.session_state.user_name = result[2]
+                    # No JWT token for investors yet, direct session state login
+                    if 'registered_email' in st.session_state: del st.session_state.registered_email
+                    if 'user_type_for_login' in st.session_state: del st.session_state.user_type_for_login
+                    st.rerun()
+                else:
+                    st.error("Invalid email or password for Investor.")
+
+    elif login_user_type == 'Service Provider':
+        st.subheader("Service Provider Login")
+        with st.form("service_provider_login_form"):
+            email = st.text_input("Email", value=default_email if st.session_state.get('user_type_for_login') == 'service_provider' else "")
+            password = st.text_input("Password", type="password")
+
+            if st.form_submit_button("Login as Service Provider"):
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT id, password_hash, name, service_type FROM service_providers WHERE email = %s", (email,))
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+
+                if result and verify_password(password, result[1]):
+                    st.session_state.user_type = 'service_provider'
+                    st.session_state.logged_in_entity_id = result[0] # This is service_provider_id
+                    st.session_state.user_name = result[2]
+                    st.session_state.service_type = result[3] # e.g., 'ca', 'legal'
+                    # No JWT token, direct session state login
+                    if 'registered_email' in st.session_state: del st.session_state.registered_email
+                    if 'user_type_for_login' in st.session_state: del st.session_state.user_type_for_login
+                    st.rerun()
+                else:
+                    st.error("Invalid email or password for Service Provider.")
+    
+    st.markdown("---")
+    st.write("Don't have an account?")
+    col_reg1, col_reg2, col_reg3 = st.columns(3)
+    with col_reg1:
+        if st.button("Register as Business"):
+            st.session_state.show_registration = 'business' # This would ideally switch to a business registration tab/page
+            # For now, we assume business registration is part of the original login_page's tab2
+            st.info("Business registration is available under the 'Register' tab of Business Login.")
+    with col_reg2:
+        if st.button("Register as Investor"):
+            st.session_state.show_registration = 'investor'
+            st.rerun() # Rerun to show the investor registration form
+    with col_reg3:
+        if st.button("Register as Service Provider"):
+            st.session_state.show_registration = 'service_provider'
+            st.rerun() # Rerun to show the service provider registration form
+
+def check_auth():
+    if 'user_type' in st.session_state:
+        if st.session_state.user_type == 'business':
+            if 'token' not in st.session_state: return False
+            business_id = verify_jwt(st.session_state.token)
+            if not business_id: return False
+            
+            # Validate session token from DB (optional, but good for security)
+            conn = get_db_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT 1 FROM user_sessions WHERE session_token = %s AND expires_at > NOW() AND business_id = %s",
+                            (st.session_state.token, business_id))
+                valid_session = cur.fetchone() is not None
+                if not valid_session:
+                    # Clean up potentially stale session state if token is invalid/expired in DB
+                    logout() # Call your existing logout to clear session
+                    return False
+                st.session_state.business_id = business_id # Ensure business_id is set from validated token
+                st.session_state.logged_in_entity_id = business_id # For consistency
+                return True
+            except Exception as e:
+                st.error(f"Session validation error: {e}") # Log this
+                return False
+            finally:
+                cur.close()
+                conn.close()
+
+        elif st.session_state.user_type in ['investor', 'service_provider']:
+            # For these types, we are relying on session state directly for now
+            # (logged_in_entity_id and user_type must be set)
+            return 'logged_in_entity_id' in st.session_state and 'user_name' in st.session_state
+    return False
 
 def logout():
     if 'token' in st.session_state:
@@ -4325,7 +4691,10 @@ def chat_module(business_id, ai_models): # ai_models might not be used directly 
 
 # Main Application
 def main():
-
+    # Initialize database and AI models
+    init_db()
+    
+    ai_models=load_ai_models()
     
     st.set_page_config(
         page_title="GrowBis", 
@@ -4333,10 +4702,6 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    # Initialize database and AI models
-    init_db()
-    
-    ai_models=load_ai_models()
     
     # Custom CSS
     st.markdown("""
@@ -4362,194 +4727,152 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    # Check authentication
+    if 'show_registration' in st.session_state:
+        reg_type = st.session_state.show_registration
+        # Clear it so it doesn't persist on subsequent reruns unless explicitly set
+        del st.session_state.show_registration 
+        
+        if reg_type == 'investor':
+            investor_registration_page()
+            if st.button("Back to Login"):
+                 st.rerun() # Go back to login selection
+            return 
+        elif reg_type == 'service_provider':
+            service_provider_registration_page()
+            if st.button("Back to Login"):
+                 st.rerun()
+            return
+        # Business registration is handled within login_page's tabs
+
     if not check_auth():
         login_page()
         return
-    
-    # Get business info
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    cur.execute("SELECT name, subscription_type, subscription_expiry FROM businesses WHERE id = %s", (st.session_state.business_id,))
-    business_info = cur.fetchone()
-    
-    cur.close()
-    conn.close()
-    
-    business_name = business_info[0]
-    subscription_type = business_info[1]
-    subscription_expiry = business_info[2]
-    
-    # Subscription status
-    days_left = (subscription_expiry - datetime.now().date()).days
-    if days_left < 0:
-        subscription_status = "Expired"
-    elif days_left < 30:
-        subscription_status = f"Expires in {days_left} days"
-    else:
-        subscription_status = f"Active until {subscription_expiry}"
-    
-    # Main app layout
-    st.title(f"🚀 {business_name} - GrowBis Business Platform")
-    st.markdown(f"""
-    **Subscription:** {subscription_type.capitalize()} • {subscription_status}
-    """)
-    
-    # Sidebar navigation
-    st.sidebar.title("Navigation")
-    
-    # Logout button
+
+    # --- User is Authenticated ---
+    user_type = st.session_state.user_type
+    user_name = st.session_state.user_name
+    entity_id = st.session_state.logged_in_entity_id
+
+    st.sidebar.title(f"Welcome, {user_name}!")
     if st.sidebar.button("Logout"):
-        logout()
+        logout() # Your existing logout function
         st.rerun()
     
-    modules = [
-        "Dashboard",
-        "Inventory & Billing",
-        "HR Tools",
-        "Project Manager",
-        "Document Generator",
-        "Market Analysis Tool",
-        "Market Doubt Assistant (AI Chatbot)",
-        "Investor & Agent Dashboards",
-        "Govt/Private Schemes & News Alerts",
-        "Opportunity Director",
-        "Voice Navigation",
-        "Pitching Helper",
-        "Strategy Generator",
-        "Hiring Helper",
-        "Tax & GST Filing",
-        "IPO & Cap Table Management",
-        "Legal, CA & Insurance Marketplace",
-        "Enterprise Intelligence Dashboards",
-        "AI Market Forecasting",
-        "Messaging"
-    ]
-    
-    selected_module = st.sidebar.selectbox("Select Module", modules)
-    
-    # Module routing
-        # Module routing
-    if selected_module == "Dashboard":
-        st.header("📊 Dashboard")
-
-        # --- Business Overview ---
-        st.write("### Business Overview (Quarterly)")
+    if user_type == 'business':
+        # Existing business dashboard logic
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT name, subscription_type, subscription_expiry FROM businesses WHERE id = %s", (entity_id,))
+        business_info = cur.fetchone()
+        cur.close()
+        conn.close()
         
-        today = datetime.now().date()
-        cq_start, cq_end = get_quarter_dates(today)
-        pq_start, pq_end = get_previous_quarter_dates(today)
-
-        current_q_revenue = get_dashboard_financials(st.session_state.business_id, cq_start, cq_end)
-        prev_q_revenue = get_dashboard_financials(st.session_state.business_id, pq_start, pq_end)
-
-        # Expenses: Simplified as 3x current total monthly salary for a quarter.
-        # This is a placeholder for a more robust expense tracking system.
-        total_monthly_salary = get_total_monthly_salary_expense(st.session_state.business_id)
-        current_q_expenses_est = total_monthly_salary * 3
-        prev_q_expenses_est = total_monthly_salary * 3 # Assuming constant for simplicity of comparison base
-
-        current_q_profit_est = current_q_revenue - current_q_expenses_est
-        prev_q_profit_est = prev_q_revenue - prev_q_expenses_est
-
-        def format_currency(value):
-            return f"${value:,.0f}"
-
-        def calculate_delta_string(current, previous):
-            if previous == 0 and current > 0:
-                return "New"
-            if previous == 0 and current == 0:
-                return "0%"
-            if previous == 0 and current < 0: # Should not happen with revenue/positive expenses
-                 return "-100%" # Or some indicator of new negative
-            if previous != 0:
-                percentage_change = ((current - previous) / abs(previous)) * 100
-                return f"{percentage_change:.1f}%"
-            return "N/A"
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric(
-                "Revenue (Current Qtr)", 
-                format_currency(current_q_revenue), 
-                calculate_delta_string(current_q_revenue, prev_q_revenue) + " vs Prev. Qtr"
-            )
-        with col2:
-            st.metric(
-                "Est. Expenses (Current Qtr)", 
-                format_currency(current_q_expenses_est),
-                # Delta for estimated expenses might not be very meaningful if based on current salaries only
-                # For now, let's show it for consistency, but acknowledge its estimation.
-                calculate_delta_string(current_q_expenses_est, prev_q_expenses_est) + " vs Prev. Qtr (Est.)"
-            )
-            st.caption("Expenses estimated based on 3x current monthly salaries.")
-        with col3:
-            st.metric(
-                "Est. Profit (Current Qtr)", 
-                format_currency(current_q_profit_est),
-                calculate_delta_string(current_q_profit_est, prev_q_profit_est) + " vs Prev. Qtr (Est.)"
-            )
+        business_name_display = business_info[0]
+        subscription_type_display = business_info[1]
+        subscription_expiry_display = business_info[2]
         
-        # --- Recent Activity ---
-        st.write("### Recent Activity")
-        activities = get_recent_activities_for_dashboard(st.session_state.business_id, limit=5)
+        days_left = (subscription_expiry_display - datetime.now().date()).days
+        subscription_status = "Expired" if days_left < 0 else (f"Expires in {days_left} days" if days_left < 30 else f"Active until {subscription_expiry_display}")
         
-        if activities:
-            for activity in activities:
-                with st.expander(f"{activity['type']}: {activity['detail']}"):
-                    st.write(f"⏱️ {activity['time_string']}")
+        st.title(f"🚀 {business_name_display} - GrowBis Business Platform")
+        st.markdown(f"**Subscription:** {subscription_type_display.capitalize()} • {subscription_status}")
+        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Business Modules")
+        modules = [
+            "Dashboard", "Inventory & Billing", "HR Tools", "Project Manager", 
+            "Document Generator", "Market Analysis Tool", "Market Doubt Assistant (AI Chatbot)",
+            "Investor & Agent Dashboards", "Govt/Private Schemes & News Alerts", 
+            "Opportunity Director", "Voice Navigation", "Pitching Helper", 
+            "Strategy Generator", "Hiring Helper", "Tax & GST Filing", 
+            "IPO & Cap Table Management", "Legal, CA & Insurance Marketplace",
+            "Enterprise Intelligence Dashboards", "AI Market Forecasting", 
+            "Messaging" # Added comma here
+        ]
+        selected_module = st.sidebar.selectbox("Select Module", modules, key="business_module_select")
+
+        # Business module routing (your existing if/elif chain)
+        if selected_module == "Dashboard":
+            st.header("📊 Dashboard")
+            st.write("### Business Overview (Quarterly)")
+            today = datetime.now().date()
+            cq_start, cq_end = get_quarter_dates(today)
+            pq_start, pq_end = get_previous_quarter_dates(today)
+            current_q_revenue = get_dashboard_financials(entity_id, cq_start, cq_end)
+            prev_q_revenue = get_dashboard_financials(entity_id, pq_start, pq_end)
+            total_monthly_salary = get_total_monthly_salary_expense(entity_id)
+            current_q_expenses_est = total_monthly_salary * 3
+            prev_q_expenses_est = total_monthly_salary * 3
+            current_q_profit_est = current_q_revenue - current_q_expenses_est
+            prev_q_profit_est = prev_q_revenue - prev_q_expenses_est
+
+            def format_currency(value):
+                return f"${value:,.0f}"
+
+            def calculate_delta_string(current, previous):
+                if previous == 0 and current > 0: return "New"
+                if previous == 0 and current == 0: return "0%"
+                if previous == 0 and current < 0: return "-100%" 
+                if previous != 0:
+                    percentage_change = ((current - previous) / abs(previous)) * 100
+                    return f"{percentage_change:.1f}%"
+                return "N/A"
+
+            col1, col2, col3 = st.columns(3)
+            with col1: st.metric("Revenue (Current Qtr)", format_currency(current_q_revenue), f"{calculate_delta_string(current_q_revenue, prev_q_revenue)} vs Prev. Qtr")
+            with col2: 
+                st.metric("Est. Expenses (Current Qtr)", format_currency(current_q_expenses_est), f"{calculate_delta_string(current_q_expenses_est, prev_q_expenses_est)} vs Prev. Qtr (Est.)")
+                st.caption("Expenses estimated based on 3x current monthly salaries.")
+            with col3: st.metric("Est. Profit (Current Qtr)", format_currency(current_q_profit_est), f"{calculate_delta_string(current_q_profit_est, prev_q_profit_est)} vs Prev. Qtr (Est.)")
+            
+            st.write("### Recent Activity")
+            activities = get_recent_activities_for_dashboard(entity_id, limit=5)
+            if activities:
+                for activity in activities:
+                    with st.expander(f"{activity['type']}: {activity['detail']}"): st.write(f"⏱️ {activity['time_string']}")
+            else: st.info("No recent activity.")
+
+        elif selected_module == "Inventory & Billing": inventory_module(entity_id, ai_models)
+        elif selected_module == "HR Tools": hr_module(entity_id, ai_models)
+        elif selected_module == "Project Manager": project_module(entity_id, ai_models)
+        elif selected_module == "Document Generator": document_module(entity_id, ai_models)
+        elif selected_module == "Market Analysis Tool": market_analysis_module(entity_id, ai_models)
+        elif selected_module == "Market Doubt Assistant (AI Chatbot)": chatbot_module(entity_id, ai_models)
+        elif selected_module == "Investor & Agent Dashboards": investor_dashboard(entity_id, ai_models)
+        elif selected_module == "Govt/Private Schemes & News Alerts": schemes_module(entity_id, ai_models)
+        elif selected_module == "Opportunity Director": opportunities_module(entity_id, ai_models)
+        elif selected_module == "Voice Navigation": voice_navigation(entity_id, ai_models)
+        elif selected_module == "Pitching Helper": pitching_helper(entity_id, ai_models)
+        elif selected_module == "Strategy Generator": strategy_generator(entity_id, ai_models)
+        elif selected_module == "Hiring Helper": hiring_helper(entity_id, ai_models)
+        elif selected_module == "Tax & GST Filing": tax_module(entity_id, ai_models)
+        elif selected_module == "IPO & Cap Table Management": ipo_module(entity_id, ai_models)
+        elif selected_module == "Legal, CA & Insurance Marketplace": 
+            legal_marketplace(entity_id, ai_models)
+            st.info("Adding a legal provider here makes their profile (Name, Service, Contact) potentially visible to other businesses on GrowBis for chat-based inquiries.")
+        elif selected_module == "Enterprise Intelligence Dashboards": enterprise_intelligence(entity_id, ai_models)
+        elif selected_module == "AI Market Forecasting": market_forecasting(entity_id, ai_models)
+        elif selected_module == "Messaging":
+            chat_module(entity_id, ai_models) 
         else:
-            st.info("No recent activity to display.")
+            st.write(f"Module {selected_module} selected.")
 
-    
-    elif selected_module == "Inventory & Billing":
-        inventory_module(st.session_state.business_id, ai_models)
-    elif selected_module == "HR Tools":
-        hr_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Project Manager":
-        project_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Document Generator":
-        document_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Market Analysis Tool":
-        market_analysis_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Market Doubt Assistant (AI Chatbot)":
-        chatbot_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Investor & Agent Dashboards":
-        investor_dashboard(st.session_state.business_id, ai_models)
-    elif selected_module == "Govt/Private Schemes & News Alerts":
-        schemes_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Opportunity Director":
-        opportunities_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Voice Navigation":
-        voice_navigation(st.session_state.business_id, ai_models)
-    elif selected_module == "Pitching Helper":
-        pitching_helper(st.session_state.business_id, ai_models)
-    elif selected_module == "Strategy Generator":
-        strategy_generator(st.session_state.business_id, ai_models)
-    elif selected_module == "Hiring Helper":
-        hiring_helper(st.session_state.business_id, ai_models)
-    elif selected_module == "Tax & GST Filing":
-        tax_module(st.session_state.business_id, ai_models)
-    elif selected_module == "IPO & Cap Table Management":
-        ipo_module(st.session_state.business_id, ai_models)
-    elif selected_module == "Legal, CA & Insurance Marketplace":
-        legal_marketplace(st.session_state.business_id, ai_models)
-    elif selected_module == "Enterprise Intelligence Dashboards":
-        enterprise_intelligence(st.session_state.business_id, ai_models)
-    elif selected_module == "AI Market Forecasting":
-        market_forecasting(st.session_state.business_id, ai_models)
-    elif selected_module == "Messaging":
-        chat_module(st.session_state.business_id, ai_models)
-    # Footer
+
+    elif user_type == 'investor':
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Investor Tools")
+        investor_portal(entity_id, ai_models)
+        
+    elif user_type == 'service_provider':
+        st.sidebar.markdown("---")
+        st.sidebar.subheader(f"{st.session_state.service_type.capitalize()} Tools")
+        service_provider_portal(entity_id, ai_models)
+
+    # Footer (common to all logged-in users)
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
     ### About GrowBis
-    - **Version**: 2.0
-    - **License**: Open Source
-    - **Database**: PostgreSQL
-    - **AI Models**: Hugging Face Transformers
-    - **Modules**: 19 integrated business tools
+    - **Version**: 2.1 (Multi-Role Update)
     """)
 
 if __name__ == "__main__":
