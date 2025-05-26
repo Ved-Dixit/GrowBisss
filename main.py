@@ -145,18 +145,6 @@ def init_db():
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS investors (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
-            name VARCHAR(100) NOT NULL,
-            firm VARCHAR(100),
-            email VARCHAR(100),
-            investment_focus VARCHAR(200),
-            portfolio_companies TEXT[],
-            last_contact DATE
-        )
-        """,
-        """
         CREATE TABLE IF NOT EXISTS schemes (
             id SERIAL PRIMARY KEY,
             business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
@@ -205,19 +193,6 @@ def init_db():
             status VARCHAR(50),
             allotment_date DATE,
             listing_date DATE
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS service_providers (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
-            name VARCHAR(100),
-            service_type VARCHAR(100),
-            contact_email VARCHAR(100),
-            rating DECIMAL(3,1),
-            experience_years INTEGER,
-            pricing TEXT,
-            availability BOOLEAN
         )
         """,
         """
