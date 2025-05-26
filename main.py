@@ -2496,7 +2496,7 @@ def investor_dashboard(business_id, ai_models):
                 target_date = st.date_input("Target Date", datetime.now().date() + timedelta(days=30), key="deal_target_date_sim")
                 notes = st.text_area("Notes", key="deal_notes_sim")
 
-                if st.form_submit_button("Add Deal to Pipeline (Simulated)", key="add_deal_btn_sim"):
+                if st.form_submit_button("Add Deal to Pipeline (Simulated)"):
                     # In a real app, this would save to a 'deals' or 'pipeline' table
                     st.success("Deal added to simulated pipeline!")
                     # You might store this in session state for the duration of the session if not using a DB table
