@@ -1604,9 +1604,10 @@ def project_module(business_id, ai_models):
                         progress_percent_timeline = min(100, max(0, (days_passed / total_days) * 100)) if total_days > 0 else 0
                         days_remaining = (end_date - today).days
                         st.write(f"**Days Remaining:** {days_remaining} days" if days_remaining >= 0 else "Project End Date Passed")
-
+                        p=project[8]
+              
                         st.write("#### Progress")
-                        st.progress(project[8] / 100.0, text=f"Project Completion: {project[8]}%")
+                        st.progress(float(p) / 100.0, text=f"Project Completion: {project[8]}%")
                         st.progress(progress_percent_timeline / 100.0, text=f"Timeline Progress: {progress_percent_timeline:.1f}%")
                     elif start_date:
                          st.write("End date not set.")
