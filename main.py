@@ -1592,8 +1592,8 @@ def project_module(business_id, ai_models):
                     
                     # Project timeline
                     today = datetime.now().date()
-                    start_date = project[4]
-                    end_date = project[5]
+                    start_date = project[5]
+                    end_date = project[6]
                     
                     st.write(f"**Start Date:** {start_date}")
                     st.write(f"**End Date:** {end_date}")
