@@ -54,6 +54,21 @@ def init_db():
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            sender_type VARCHAR(30) NOT NULL, -- 'business', 'investor', 'service_provider'
+            sender_id INTEGER NOT NULL,
+            receiver_type VARCHAR(30) NOT NULL,
+            receiver_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            read_at TIMESTAMP NULLABLE
+            -- Index for faster conversation lookup (optional, but good for performance)
+            -- CREATE INDEX IF NOT EXISTS idx_messages_conversation_pair1 ON messages (sender_type, sender_id, receiver_type, receiver_id, created_at);
+            -- CREATE INDEX IF NOT EXISTS idx_messages_conversation_pair2 ON messages (receiver_type, receiver_id, sender_type, sender_id, created_at);
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS products (
             id SERIAL PRIMARY KEY,
             business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
@@ -4083,6 +4098,230 @@ def market_forecasting(business_id, ai_models):
         
         cur.close()
         conn.close()
+def chat_module(business_id, ai_models): # ai_models might not be used directly in chat
+    st.header("💬 Messaging")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # --- Mappings ---
+    TYPE_MAP_DISPLAY_TO_DB = {
+        "Businesses": "business",
+        "Investors": "investor",
+        "Service Providers": "service_provider"
+    }
+    TYPE_MAP_DB_TO_DISPLAY = {v: k for k, v in TYPE_MAP_DISPLAY_TO_DB.items()}
+
+
+    # --- State variables ---
+    if 'chat_partner_db_type' not in st.session_state:
+        st.session_state.chat_partner_db_type = None
+    if 'chat_partner_id' not in st.session_state:
+        st.session_state.chat_partner_id = None
+    if 'chat_partner_name' not in st.session_state:
+        st.session_state.chat_partner_name = None
+
+    # --- Sidebar for selecting chat partner ---
+    st.sidebar.subheader("Start or Continue Chat")
+    
+    st.sidebar.write("**Recent Chats:**")
+    try:
+        query_recent_chats = """
+        SELECT DISTINCT
+            CASE
+                WHEN sender_type = 'business' AND sender_id = %(current_business_id)s THEN receiver_type
+                ELSE sender_type
+            END as partner_type,
+            CASE
+                WHEN sender_type = 'business' AND sender_id = %(current_business_id)s THEN receiver_id
+                ELSE sender_id
+            END as partner_id
+        FROM messages
+        WHERE (sender_type = 'business' AND sender_id = %(current_business_id)s)
+           OR (receiver_type = 'business' AND receiver_id = %(current_business_id)s);
+        """
+        cur.execute(query_recent_chats, {'current_business_id': business_id})
+        recent_partners_db = cur.fetchall()
+        
+        recent_chat_options = {} # Display Name: (db_type, id)
+        for p_type_db, p_id in recent_partners_db:
+            partner_display_name = "Unknown"
+            partner_table_name = ""
+            if p_type_db == 'business':
+                partner_table_name = 'businesses'
+            elif p_type_db == 'investor':
+                partner_table_name = 'investors'
+            elif p_type_db == 'service_provider':
+                partner_table_name = 'service_providers'
+            
+            if partner_table_name:
+                # Ensure p_id is an integer for the query
+                try:
+                    p_id_int = int(p_id)
+                    cur.execute(sql.SQL("SELECT name FROM {} WHERE id = %s").format(sql.Identifier(partner_table_name)), (p_id_int,))
+                    name_result = cur.fetchone()
+                    if name_result:
+                        partner_display_name = f"{name_result[0]} ({TYPE_MAP_DB_TO_DISPLAY.get(p_type_db, p_type_db.capitalize())})"
+                        recent_chat_options[partner_display_name] = (p_type_db, p_id_int)
+                except ValueError:
+                    st.sidebar.warning(f"Invalid ID format for partner type {p_type_db}: {p_id}")
+                except Exception as e_name:
+                    st.sidebar.warning(f"Could not fetch name for {p_type_db} ID {p_id}: {e_name}")
+
+
+        selected_recent_chat_display = st.sidebar.selectbox(
+            "Select from recent chats:",
+            options=["-- New Chat --"] + list(recent_chat_options.keys()),
+            key="select_recent_chat"
+        )
+
+        if selected_recent_chat_display != "-- New Chat --":
+            partner_db_type, partner_id_val = recent_chat_options[selected_recent_chat_display]
+            st.session_state.chat_partner_db_type = partner_db_type
+            st.session_state.chat_partner_id = partner_id_val
+            st.session_state.chat_partner_name = selected_recent_chat_display.split(" (")[0]
+            st.rerun()
+
+    except Exception as e_recent:
+        st.sidebar.error(f"Error loading recent chats: {e_recent}")
+
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Find New Chat Partner")
+    chat_type_options_display = ["Businesses", "Investors", "Service Providers"]
+    selected_chat_type_display = st.sidebar.selectbox("Chat with:", chat_type_options_display, key="select_chat_type_display")
+
+    partner_options_new = {} # Display Name: (db_type, id)
+    
+    try:
+        target_db_type = TYPE_MAP_DISPLAY_TO_DB.get(selected_chat_type_display)
+        if target_db_type == "business":
+            cur.execute("SELECT id, name FROM businesses WHERE id != %s ORDER BY name", (business_id,))
+            partners_list = cur.fetchall()
+            for pid, pname in partners_list:
+                partner_options_new[f"{pname} (Business)"] = (target_db_type, pid)
+        elif target_db_type == "investor":
+            cur.execute("SELECT id, name FROM investors ORDER BY name") # Show all investors
+            partners_list = cur.fetchall()
+            for pid, pname in partners_list:
+                partner_options_new[f"{pname} (Investor)"] = (target_db_type, pid)
+        elif target_db_type == "service_provider":
+            cur.execute("SELECT id, name, service_type FROM service_providers ORDER BY name") # Show all
+            partners_list = cur.fetchall()
+            for pid, pname, p_service_type in partners_list:
+                 partner_options_new[f"{pname} ({p_service_type.capitalize()} - Service Provider)"] = (target_db_type, pid)
+    except Exception as e:
+        st.sidebar.error(f"Error fetching new chat partners: {e}")
+
+    selected_partner_display_new = st.sidebar.selectbox(
+        f"Select {selected_chat_type_display[:-1]}:",
+        options=["-- Select --"] + list(partner_options_new.keys()),
+        key="select_new_chat_partner"
+    )
+
+    if selected_partner_display_new != "-- Select --":
+        partner_db_type, partner_id_val = partner_options_new[selected_partner_display_new]
+        st.session_state.chat_partner_db_type = partner_db_type
+        st.session_state.chat_partner_id = partner_id_val
+        st.session_state.chat_partner_name = selected_partner_display_new.split(" (")[0]
+        st.rerun()
+
+    # --- Main area for chat interface ---
+    if st.session_state.chat_partner_db_type and st.session_state.chat_partner_id:
+        partner_db_type = st.session_state.chat_partner_db_type
+        partner_id = st.session_state.chat_partner_id
+        partner_name = st.session_state.chat_partner_name
+
+        st.subheader(f"Chat with {partner_name} ({TYPE_MAP_DB_TO_DISPLAY.get(partner_db_type, partner_db_type).rstrip('s')})")
+
+        # --- Display Profile Snippet (Example) ---
+        with st.expander(f"View {partner_name}'s Profile Snippet", expanded=False):
+            try:
+                profile_info = "Not available."
+                if partner_db_type == 'business':
+                    cur.execute("SELECT email, created_at FROM businesses WHERE id = %s", (partner_id,))
+                    p_data = cur.fetchone()
+                    if p_data: profile_info = f"Email: {p_data[0]}\nJoined: {p_data[1].strftime('%Y-%m-%d')}"
+                elif partner_db_type == 'investor':
+                    cur.execute("SELECT firm, email, investment_focus FROM investors WHERE id = %s", (partner_id,))
+                    p_data = cur.fetchone()
+                    if p_data: profile_info = f"Firm: {p_data[0]}\nEmail: {p_data[1]}\nFocus: {p_data[2]}"
+                elif partner_db_type == 'service_provider':
+                    cur.execute("SELECT service_type, contact_email, rating, experience_years FROM service_providers WHERE id = %s", (partner_id,))
+                    p_data = cur.fetchone()
+                    if p_data: profile_info = f"Service: {p_data[0].capitalize()}\nEmail: {p_data[1]}\nRating: {p_data[2]}/5\nExperience: {p_data[3]} years"
+                st.text(profile_info)
+            except Exception as e_prof:
+                st.warning(f"Could not load profile snippet: {e_prof}")
+        
+        # --- Fetch and Display Messages ---
+        current_user_db_type = "business" # Logged-in user is always a business
+        current_user_id = business_id
+
+        try:
+            query_messages = """
+                SELECT sender_type, sender_id, content, created_at
+                FROM messages
+                WHERE
+                    (sender_type = %(current_type)s AND sender_id = %(current_id)s AND receiver_type = %(partner_type)s AND receiver_id = %(partner_id)s)
+                OR
+                    (sender_type = %(partner_type)s AND sender_id = %(partner_id)s AND receiver_type = %(current_type)s AND receiver_id = %(current_id)s)
+                ORDER BY created_at ASC;
+            """
+            cur.execute(query_messages, {
+                'current_type': current_user_db_type, 'current_id': current_user_id,
+                'partner_type': partner_db_type, 'partner_id': partner_id
+            })
+            messages = cur.fetchall()
+
+            chat_container = st.container()
+            with chat_container:
+                if not messages:
+                    st.info(f"No messages yet with {partner_name}. Start the conversation!")
+
+                for msg_sender_type, msg_sender_id, msg_content, msg_created_at in messages:
+                    timestamp_str = msg_created_at.strftime('%Y-%m-%d %H:%M')
+                    if msg_sender_type == current_user_db_type and msg_sender_id == current_user_id:
+                        st.markdown(f"<div style='text-align: right; margin-left: 20%; margin-bottom: 5px; padding: 10px; background-color: #DCF8C6; border-radius: 10px;'><b>You</b> ({timestamp_str}):<br>{msg_content}</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<div style='text-align: left; margin-right: 20%; margin-bottom: 5px; padding: 10px; background-color: #FFFFFF; border-radius: 10px; border: 1px solid #E0E0E0;'><b>{partner_name}</b> ({timestamp_str}):<br>{msg_content}</div>", unsafe_allow_html=True)
+            
+            # Auto-scroll (basic attempt, might need more robust JS for perfect scroll)
+            if messages:
+                 st.markdown(f"<script>window.scrollTo(0,document.body.scrollHeight);</script>", unsafe_allow_html=True)
+
+
+        except Exception as e:
+            st.error(f"Error fetching messages: {e}")
+
+        # --- Message Input Form ---
+        with st.form("new_message_form", clear_on_submit=True):
+            new_message_content = st.text_area("Your message:", key=f"new_message_content_{partner_id}") # Unique key
+            send_button = st.form_submit_button("Send")
+
+            if send_button and new_message_content.strip():
+                try:
+                    insert_query = """
+                        INSERT INTO messages (sender_type, sender_id, receiver_type, receiver_id, content)
+                        VALUES (%s, %s, %s, %s, %s);
+                    """
+                    cur.execute(insert_query, (
+                        current_user_db_type, current_user_id,
+                        partner_db_type, partner_id,
+                        new_message_content.strip()
+                    ))
+                    conn.commit()
+                    # st.success("Message sent!") # Can be removed for cleaner UI, rerun shows message
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error sending message: {e}")
+            elif send_button and not new_message_content.strip():
+                st.warning("Message cannot be empty.")
+    else:
+        st.info("Select a user, investor, or service provider from the sidebar to start chatting, or choose a recent chat.")
+
+    cur.close()
+    conn.close()
 
 # Main Application
 def main():
@@ -4185,6 +4424,7 @@ def main():
         "Legal, CA & Insurance Marketplace",
         "Enterprise Intelligence Dashboards",
         "AI Market Forecasting"
+        "Messaging"
     ]
     
     selected_module = st.sidebar.selectbox("Select Module", modules)
@@ -4299,7 +4539,8 @@ def main():
         enterprise_intelligence(st.session_state.business_id, ai_models)
     elif selected_module == "AI Market Forecasting":
         market_forecasting(st.session_state.business_id, ai_models)
-    
+    elif selected_module == "Messaging":
+        chat_module(st.session_state.business_id, ai_models)
     # Footer
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
