@@ -29,9 +29,9 @@ def get_db_connection():
     conn = psycopg2.connect(
         dbname = "railway",
         user = "postgres",
-        password = "GYEaWyjVgFkHqPcELGqBsPzOAfwgtqdR",
-        host = "hopper.proxy.rlwy.net",
-        port = "47078"
+        password = "emnlhPodQmcugNMopASfPamvJnOytYFq",
+        host = "shortline.proxy.rlwy.net",
+        port = "11026"
     )
     return conn
 
@@ -4756,8 +4756,8 @@ def main():
         st.sidebar.subheader("Business Modules")
         modules = [
             "Dashboard", "Inventory & Billing", "HR Tools", "Project Manager", 
-            "Document Generator", "Market Analysis Tool", "Market Doubt Assistant (AI Chatbot)",
-            "Investor & Agent Dashboards", "Govt/Private Schemes & News Alerts", 
+            "Document Generator", "Market Analysis Tool", "Market Doubt Assistant (AI Chatbot)"
+            , "Govt/Private Schemes & News Alerts", 
             "Opportunity Director", "Voice Navigation", "Pitching Helper", 
             "Strategy Generator", "Hiring Helper", "Tax & GST Filing", 
             "IPO & Cap Table Management", "Legal, CA & Insurance Marketplace",
