@@ -1029,7 +1029,10 @@ def get_recent_activities_for_dashboard(business_id, limit=4):
     cur.close(); conn.close()
     def get_sort_key(activity):
         time_val = activity.get("time_obj")
-        if isinstance(time_val, datetime): return time_val
+        if isinstance(time_val, datetime): 
+            if time_val.tzinfo is None: # It's a naive datetime
+                return time_val.replace(tzinfo=timezone.utc) # Make it UTC aware
+            return time_val
         if isinstance(time_val, date): return datetime.combine(time_val, datetime.min.time(), tzinfo=timezone.utc)
         return datetime.min.replace(tzinfo=timezone.utc)
     activities_data.sort(key=get_sort_key, reverse=True)
