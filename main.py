@@ -62,7 +62,7 @@ def init_db():
             receiver_id INTEGER NOT NULL,
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            read_at TIMESTAMP NULLABLE
+            read_at TIMESTAMP NULL -- Corrected line: Removed NULLABLE, NULL is implied or can be explicit
             -- Index for faster conversation lookup (optional, but good for performance)
             -- CREATE INDEX IF NOT EXISTS idx_messages_conversation_pair1 ON messages (sender_type, sender_id, receiver_type, receiver_id, created_at);
             -- CREATE INDEX IF NOT EXISTS idx_messages_conversation_pair2 ON messages (receiver_type, receiver_id, sender_type, sender_id, created_at);
