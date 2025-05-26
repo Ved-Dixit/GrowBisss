@@ -4585,10 +4585,10 @@ def chat_module(business_id, ai_models): # ai_models not used for user-to-user
 # Main Application
 def main():
     """Main function to run the Streamlit application."""
-    init_db()
-    ai_models = load_ai_models()
     
     st.set_page_config(page_title="GrowBis", page_icon="🚀", layout="wide", initial_sidebar_state="expanded")
+    init_db()
+    ai_models = load_ai_models()
     st.markdown("""<style>.main {background-color: #f5f5f5;} .sidebar .sidebar-content {background-color: #2c3e50; color: white;} 
                    h1 {color: #2c3e50;} .stButton>button {background-color: #3498db; color: white;} 
                    .stDownloadButton>button {background-color: #2ecc71; color: white;}</style>""", unsafe_allow_html=True)
