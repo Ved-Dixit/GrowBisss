@@ -1484,7 +1484,6 @@ def hr_module(business_id, ai_models):
     
     cur.close(); conn.close()
 
-
 # Project Manager Module
 def project_module(business_id, ai_models):
     """Streamlit module for Project Management."""
@@ -1583,17 +1582,17 @@ def project_module(business_id, ai_models):
                 project = cur.fetchone()
                 
                 if project:
-                    st.write(f"### {project[2]}")
-                    st.write(f"**Client:** {project[3]}")
-                    st.write(f"**Manager:** {project[9] or 'N/A'}")
-                    st.write(f"**Status:** {project[7]}")
-                    st.write(f"**Progress:** {project[8]}%")
-                    st.write(f"**Description:** {project[1]}")
+                    st.write(f"### {project[2]}") # Correct: name
+                    st.write(f"**Client:** {project[4]}") # Correct: client
+                    st.write(f"**Manager:** {project[11] or 'N/A'}") # Correct: manager_name
+                    st.write(f"**Status:** {project[8]}") # Correct: status
+                    st.write(f"**Progress:** {project[10]}%") # Correct: progress
+                    st.write(f"**Description:** {project[3]}") # Corrected: description
                     
                     # Project timeline
                     today = datetime.now().date()
-                    start_date = project[5]
-                    end_date = project[6]
+                    start_date = project[5] # Corrected: start_date
+                    end_date = project[6] # Corrected: end_date
                     
                     st.write(f"**Start Date:** {start_date}")
                     st.write(f"**End Date:** {end_date}")
@@ -1604,10 +1603,12 @@ def project_module(business_id, ai_models):
                         progress_percent_timeline = min(100, max(0, (days_passed / total_days) * 100)) if total_days > 0 else 0
                         days_remaining = (end_date - today).days
                         st.write(f"**Days Remaining:** {days_remaining} days" if days_remaining >= 0 else "Project End Date Passed")
-                        p=project[10] if project[10] is not None else 0
-              
+                        
+                        # Ensure progress is treated as a number for the progress bar
+                        current_progress_value = project[10] if project[10] is not None else 0
+
                         st.write("#### Progress")
-                        st.progress(float(p) / 100.0, text=f"Project Completion: {project[8]}%")
+                        st.progress(float(current_progress_value) / 100.0, text=f"Project Completion: {current_progress_value}%") # Corrected: use project[10]
                         st.progress(progress_percent_timeline / 100.0, text=f"Timeline Progress: {progress_percent_timeline:.1f}%")
                     elif start_date:
                          st.write("End date not set.")
@@ -1622,8 +1623,8 @@ def project_module(business_id, ai_models):
                         cur.execute("SELECT id, name FROM employees WHERE business_id = %s ORDER BY name", (business_id,))
                         managers_update = cur.fetchall()
                         manager_options_update = {m[1]: m[0] for m in managers_update}
-                        current_manager_name = project[9]
-                        current_manager_id = project[6] # manager_id column
+                        current_manager_name = project[11] # Corrected: manager_name
+                        current_manager_id = project[9] # Corrected: manager_id
                         
                         default_manager_index = 0
                         if current_manager_name and current_manager_name in manager_options_update:
@@ -1633,10 +1634,10 @@ def project_module(business_id, ai_models):
                             new_status = st.selectbox(
                                 "Status",
                                 ["Not Started", "In Progress", "On Hold", "Completed", "Cancelled"],
-                                index=["Not Started", "In Progress", "On Hold", "Completed", "Cancelled"].index(project[7]),
+                                index=["Not Started", "In Progress", "On Hold", "Completed", "Cancelled"].index(project[8]), # Corrected: status
                                 key=f"update_status_{project_id}"
                             )
-                            new_progress = st.slider("Progress (%)", 0, 100, project[8], key=f"update_progress_{project_id}")
+                            new_progress = st.slider("Progress (%)", 0, 100, current_progress_value, key=f"update_progress_{project_id}") # Corrected: use current_progress_value (from project[10])
                             new_manager_name = st.selectbox("Project Manager", options=["-- Select --"] + list(manager_options_update.keys()), index=default_manager_index, key=f"update_manager_{project_id}")
                             notes = st.text_area("Update Notes", key=f"update_notes_{project_id}")
                             
@@ -1650,11 +1651,11 @@ def project_module(business_id, ai_models):
                                 )
                                 
                                 # Add to project documents
-                                doc_title = f"Project Update - {project[2]} - {datetime.now().date()}"
+                                doc_title = f"Project Update - {project[2]} - {datetime.now().date()}" # Correct: name
                                 doc_content = f"""
-                                Project: {project[2]}
-                                Status Changed: {project[7]} → {new_status}
-                                Progress: {project[8]}% → {new_progress}%
+                                Project: {project[2]} # Correct: name
+                                Status Changed: {project[8]} → {new_status} # Corrected: status
+                                Progress: {project[10]}% → {new_progress}% # Corrected: progress
                                 Manager Changed: {current_manager_name or 'N/A'} → {new_manager_name or 'N/A'}
 
                                 Notes:
