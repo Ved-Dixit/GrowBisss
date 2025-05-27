@@ -3290,7 +3290,7 @@ def strategy_generator(business_id, ai_models):
                 lines = section_text.strip().split("\n")
                 expander_title = lines[0][:100] + ("..." if len(lines[0]) > 100 else "")
                 # Use a more unique key for expanders if there's a chance of title collision
-                with st.expander(exoander_title):
+                with st.expander(expander_title):
                     st.markdown(section_text) 
 
         st.download_button(
