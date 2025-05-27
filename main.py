@@ -3278,17 +3278,37 @@ def strategy_generator(business_id, ai_models):
                             lines = section.strip().split("\n")
                             expander_title = lines[0][:100] + "..." if len(lines[0]) > 100 else lines[0]
                             with st.expander(expander_title):
-                                st.write(section) # Display the full section content
-                    filename_business_type = business_type if business_type and business_type.strip() else "Unnamed_Strategy"
-                    file_name_str = f"{filename_business_type.replace(' ', '_')}_Growth_Playbook.txt"
-                    
+                                st.write(section) # Display the full section changes
+                                st.rerun()
+    if st.session_state.strategy_download_details:
+        details = st.session_state.strategy_download_details
+        st.subheader(f"Your Growth Playbook for: {details['business_type_display']}")
+        
+        # Display the generated strategy content
+        st.text_area("Strategy Content", details["content"], height=600, key="generated_strategy_content_display", disabled=True)
+        
+        # Optionally, re-display expander sections if the AI output format is consistent
+        # This part depends on how structured your AI output is.
+        st.write("#### Playbook Sections (Preview)")
+        sections = details["content"].split("\n\n") 
+        for i, section_text in enumerate(sections):
+            if section_text.strip():
+                lines = section_text.strip().split("\n")
+                expander_title = lines[0][:100] + ("..." if len(lines[0]) > 100 else "")
+                # Use a more unique key for expanders if there's a chance of title collision
+                with st.expander(expander_title, key=f"strategy_expander_{i}"):
+                    st.markdown(section_text) 
 
-                    d(
-                        "Download Playbook (TXT)",
-                        data=strategy,
-                        file_name=f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
-                        mime="text/plain"
-                      )
+        st.download_button(
+            "Download Playbook (TXT)",
+            data=details["content"],
+            file_name=details["file_name"],
+            mime="text/plain",
+            key="download_strategy_playbook_final_btn"
+        )
+        if st.button("Generate Another Strategy", key="generate_another_strategy_btn"):
+            st.session_state.strategy_download_details = None
+            st.rerun()
 
 # Hiring Helper Module
 def hiring_helper(business_id, ai_models):
