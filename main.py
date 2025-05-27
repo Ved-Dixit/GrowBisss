@@ -2,7 +2,8 @@ import streamlit as st
 import psycopg2
 from psycopg2 import sql
 import os
-from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers.pipelines import pipeline
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone, date
