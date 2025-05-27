@@ -4213,6 +4213,11 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
         df_revenue = pd.DataFrame(revenue_data, columns=['PeriodStart', 'Revenue'])
         if not df_revenue.empty:
             df_revenue['PeriodStart'] = pd.to_datetime(df_revenue['PeriodStart'])
+            if df_revenue['PeriodStart'].dt.tz is None:
+                df_revenue['PeriodStart'] = df_revenue['PeriodStart'].dt.tz_localize('UTC')
+            elif df_revenue['PeriodStart'].dt.tz.zone != 'UTC': # type: ignore
+                 df_revenue['PeriodStart'] = df_revenue['PeriodStart'].dt.tz_convert('UTC')
+
             df_data = pd.merge(df_data, df_revenue, on='PeriodStart', how='left')
         else:
             df_data['Revenue'] = 0.0
