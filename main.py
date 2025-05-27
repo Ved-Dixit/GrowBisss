@@ -22,7 +22,7 @@ import plotly.express as px
 from PIL import Image
 import json
 from fpdf import FPDF
-from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode, ClientSettings
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 import av 
 #
 # Load environment variables
@@ -2991,10 +2991,7 @@ def voice_navigation(business_id, ai_models): # ai_models might not be used dire
         mode=WebRtcMode.SENDONLY,
         audio_processor_factory=AudioRecorderProcessor, # Pass the class itself
         media_stream_constraints={"audio": True, "video": False},
-        client_settings=ClientSettings(
-            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-            media_stream_constraints={"audio": True, "video": False},
-        ),
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
         # desired_playing_state can be used to control start/stop programmatically if needed
     )
 
