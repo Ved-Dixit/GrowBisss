@@ -4396,19 +4396,10 @@ def get_operational_efficiency_trends_data(business_id, num_months=6):
     try:
         # Calculate the start date for the lookback period
         end_date_for_query = datetime.now().date()
-        # To get 'num_months' of data, we need to go back num_months-1 full months, 
-        # and then to the start of that month.
-        # Example: if num_months = 6 and today is 2023-08-15
-        # We want data for Aug, Jul, Jun, May, Apr, Mar
-        # So, start_date_lookback should be 2023-03-01
-        
-        # First day of the current month
         first_day_current_month = end_date_for_query.replace(day=1)
         
-        # Go back (num_months - 1) full months
         start_date_lookback = first_day_current_month
         for _ in range(num_months - 1):
-            # Go to the last day of the previous month, then the first day of that month
             last_day_prev_month = start_date_lookback - timedelta(days=1)
             start_date_lookback = last_day_prev_month.replace(day=1)
 
@@ -4418,33 +4409,32 @@ def get_operational_efficiency_trends_data(business_id, num_months=6):
                 AVG(p.progress) as avg_progress
             FROM projects p
             WHERE p.business_id = %s 
-              AND p.status IN ('In Progress', 'Completed') -- Consider relevant statuses
-              AND COALESCE(p.end_date, p.start_date) >= %s -- Projects active or ending in the period
-              AND p.start_date <= %s -- Projects started before or during the period end
+              AND p.status IN ('In Progress', 'Completed') 
+              AND COALESCE(p.end_date, p.start_date) >= %s 
+              AND p.start_date <= %s 
             GROUP BY project_month
-            HAVING COUNT(p.id) > 0 -- Ensure there are projects in the month to average
+            HAVING COUNT(p.id) > 0 
             ORDER BY project_month DESC
             LIMIT %s; 
         """)
-        # The LIMIT might be too restrictive if some months have no projects.
-        # A better approach is to generate all months and left-join.
-        # For simplicity with current structure, we'll proceed but note this.
-
+        
         cur.execute(query, (business_id, start_date_lookback, end_date_for_query, num_months))
         data = cur.fetchall()
         
         if data:
             df_raw_efficiency = pd.DataFrame(data, columns=["Month", "Efficiency"])
             df_raw_efficiency["Month"] = pd.to_datetime(df_raw_efficiency["Month"])
+            
+            if df_raw_efficiency["Month"].dt.tz is not None:
+                df_raw_efficiency["Month"] = df_raw_efficiency["Month"].dt.tz_localize(None)
+            
             df_raw_efficiency["Efficiency"] = df_raw_efficiency["Efficiency"].astype(float).round(1)
             
-            # Create a full date range for the last num_months to ensure all months are present
             month_series = pd.date_range(end=first_day_current_month, periods=num_months, freq='MS')
             df_template_months = pd.DataFrame({'Month': month_series})
 
-            # Merge and fill missing values
             df_efficiency = pd.merge(df_template_months, df_raw_efficiency, on="Month", how="left")
-            df_efficiency["Efficiency"] = df_efficiency["Efficiency"].fillna(0) # Fill months with no projects with 0 efficiency
+            df_efficiency["Efficiency"] = df_efficiency["Efficiency"].fillna(0) 
             df_efficiency["Month"] = df_efficiency["Month"].dt.strftime('%Y-%m')
             df_efficiency = df_efficiency.sort_values(by="Month").reset_index(drop=True)
 
@@ -4454,6 +4444,7 @@ def get_operational_efficiency_trends_data(business_id, num_months=6):
         cur.close()
         conn.close()
     return df_efficiency
+
 
 def get_employee_productivity_score_data(business_id):
     """Calculates average Employee Productivity Score."""
