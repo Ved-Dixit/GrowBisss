@@ -3266,7 +3266,7 @@ def strategy_generator(business_id, ai_models):
                     Format the output clearly with headings and bullet points.
                     """
                     
-                    strategy = ai_models.generate_text(prompt, max_length=2000)
+                    strategy_content = ai_models.generate_text(prompt, max_length=2000)
                     
                     st.session_state.strategy_download_details = {
                         "content": strategy_content,
