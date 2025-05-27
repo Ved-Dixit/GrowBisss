@@ -4175,24 +4175,25 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
     end_date = datetime.now().date()
     
     if period_type == 'M':
-        # Use Month Start frequency for easier grouping with DATE_TRUNC
+        # Use Month Start frequency and make it UTC-aware
         dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS').tz_localize('UTC')
         period_label_format = '%Y-%m'
         sql_trunc_period = 'month'
     elif period_type == 'Q':
-        # Use Quarter Start frequency
-        current_quarter_start = pd.Timestamp(end_date).to_period('Q').start_time.date()
-        dates = pd.date_range(end=current_quarter_start, periods=num_periods, freq='QS').tz_localize('UTC')
-        # For label, we'll calculate quarter number manually
+        # Use Quarter Start frequency and make it UTC-aware
+        current_quarter_start_naive = pd.Timestamp(end_date).to_period('Q').start_time.date()
+        # pd.date_range needs a Timestamp for tz_localize, ensure end_date is Timestamp if using directly
+        dates = pd.date_range(end=pd.Timestamp(current_quarter_start_naive), periods=num_periods, freq='QS').tz_localize('UTC')
         sql_trunc_period = 'quarter'
-    else: # Default to monthly
+    else: # Default to monthly, make it UTC-aware
         dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS').tz_localize('UTC')
         period_label_format = '%Y-%m'
         sql_trunc_period = 'month'
 
-    df_data = pd.DataFrame({'PeriodStart': dates})
+    df_data = pd.DataFrame({'PeriodStart': dates}) # Now df_data['PeriodStart'] is UTC-aware
     
     if period_type == 'Q':
+        # For Quarter labels, ensure we handle the UTC datetime correctly for formatting
         df_data['PeriodLabel'] = df_data['PeriodStart'].apply(lambda x: f"{x.year}-Q{((x.month-1)//3)+1}")
     else:
         df_data['PeriodLabel'] = df_data['PeriodStart'].dt.strftime(period_label_format)
@@ -4206,13 +4207,17 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
             GROUP BY period_start_db
             ORDER BY period_start_db;
         """)
-        # Ensure dates.min() is a date object
-        min_date_for_query = dates.min().date() if hasattr(dates.min(), 'date') else dates.min()
+        # Ensure dates.min() is a date object for the query if needed,
+        # but for comparison with TIMESTAMP WITH TIME ZONE, direct Timestamp might be fine.
+        min_date_for_query = dates.min().date() # Querying with date part
+        
         cur.execute(query_revenue, (sql_trunc_period, business_id, min_date_for_query, end_date))
         revenue_data = cur.fetchall()
         df_revenue = pd.DataFrame(revenue_data, columns=['PeriodStart', 'Revenue'])
         if not df_revenue.empty:
+            # pd.to_datetime will likely make this UTC-aware if DB stores timezone
             df_revenue['PeriodStart'] = pd.to_datetime(df_revenue['PeriodStart'])
+            # If df_revenue['PeriodStart'] is not UTC by default from DB, ensure it is:
             if df_revenue['PeriodStart'].dt.tz is None:
                 df_revenue['PeriodStart'] = df_revenue['PeriodStart'].dt.tz_localize('UTC')
             elif df_revenue['PeriodStart'].dt.tz.zone != 'UTC': # type: ignore
@@ -4227,7 +4232,6 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
     df_data['Revenue'] = df_data['Revenue'].fillna(0.0).astype(float)
 
     # Fetch Expenses (Simplified: using total monthly salaries)
-    # For quarterly, this will be 3x monthly salary.
     try:
         cur.execute("SELECT SUM(salary) FROM employees WHERE business_id = %s", (business_id,))
         total_monthly_salary_tuple = cur.fetchone()
@@ -4245,6 +4249,7 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
     cur.close()
     conn.close()
     return df_data[['PeriodLabel', 'Revenue', 'Expenses', 'Profit']].rename(columns={'PeriodLabel': 'Period'})
+
 def calculate_delta(current, previous):
     if previous == 0: return "N/A" if current == 0 else "New"
     return f"{(current - previous) / previous * 100:.1f}%"
