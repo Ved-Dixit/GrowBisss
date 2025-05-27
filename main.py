@@ -4176,17 +4176,17 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
     
     if period_type == 'M':
         # Use Month Start frequency for easier grouping with DATE_TRUNC
-        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS')
+        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS').tz_localize('UTC')
         period_label_format = '%Y-%m'
         sql_trunc_period = 'month'
     elif period_type == 'Q':
         # Use Quarter Start frequency
         current_quarter_start = pd.Timestamp(end_date).to_period('Q').start_time.date()
-        dates = pd.date_range(end=current_quarter_start, periods=num_periods, freq='QS')
+        dates = pd.date_range(end=current_quarter_start, periods=num_periods, freq='QS').tz_localize('UTC')
         # For label, we'll calculate quarter number manually
         sql_trunc_period = 'quarter'
     else: # Default to monthly
-        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS')
+        dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS').tz_localize('UTC')
         period_label_format = '%Y-%m'
         sql_trunc_period = 'month'
 
