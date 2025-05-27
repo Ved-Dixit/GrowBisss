@@ -3279,13 +3279,16 @@ def strategy_generator(business_id, ai_models):
                             expander_title = lines[0][:100] + "..." if len(lines[0]) > 100 else lines[0]
                             with st.expander(expander_title):
                                 st.write(section) # Display the full section content
+                    filename_business_type = business_type if business_type and business_type.strip() else "Unnamed_Strategy"
+                    file_name_str = f"{filename_business_type.replace(' ', '_')}_Growth_Playbook.txt"
+                    
 
-        d(
-            "Download Playbook (TXT)",
-            data=strategy,
-            file_name=f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
-            mime="text/plain"
-        )
+                    d(
+                        "Download Playbook (TXT)",
+                        data=strategy,
+                        file_name=f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
+                        mime="text/plain"
+                      )
 
 # Hiring Helper Module
 def hiring_helper(business_id, ai_models):
