@@ -3280,12 +3280,12 @@ def strategy_generator(business_id, ai_models):
                             with st.expander(expander_title):
                                 st.write(section) # Display the full section content
 
-                    d(
-                        "Download Playbook (TXT)",
-                        data=strategy,
-                        file_name=f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
-                        mime="text/plain"
-                    )
+                d(
+                    "Download Playbook (TXT)",
+                    data=strategy,
+                    file_name=f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
+                    mime="text/plain"
+                )
 
 # Hiring Helper Module
 def hiring_helper(business_id, ai_models):
