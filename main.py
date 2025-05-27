@@ -3225,7 +3225,9 @@ def strategy_generator(business_id, ai_models):
     """Streamlit module for generating business strategies."""
     st.header("♟️ Strategy Generator")
     st.info("Generates a text outline for a business strategy based on your inputs.")
-    
+    if "strategy_download_details" not in st.session_state:
+        st.session_state.strategy_download_details = None
+
     with st.form("strategy_input"):
         business_type = st.text_input("Your Business Type (e.g., SaaS, E-commerce, Consulting)", key="strategy_biz_type")
         business_stage = st.selectbox("Business Stage", [
