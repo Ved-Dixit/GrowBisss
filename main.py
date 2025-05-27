@@ -3221,6 +3221,7 @@ def pitching_helper(business_id, ai_models):
 
 # Strategy Generator Module
 def strategy_generator(business_id, ai_models):
+    d=st.download_button
     """Streamlit module for generating business strategies."""
     st.header("♟️ Strategy Generator")
     st.info("Generates a text outline for a business strategy based on your inputs.")
@@ -3279,7 +3280,7 @@ def strategy_generator(business_id, ai_models):
                             with st.expander(expander_title):
                                 st.write(section) # Display the full section content
 
-                    st.download_button(
+                    d(
                         "Download Playbook (TXT)",
                         data=strategy,
                         file_name=f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
