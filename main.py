@@ -3268,20 +3268,12 @@ def strategy_generator(business_id, ai_models):
                     
                     strategy = ai_models.generate_text(prompt, max_length=2000)
                     
-                    st.subheader("Your Growth Playbook")
-                    st.text_area("Strategy Content", strategy, height=600, key="generated_strategy_content")
-                    
-                    # Create sections with expanders for better readability
-                    st.write("#### Playbook Sections")
-                    sections = strategy.split("\n\n") # Simple split, might need refinement based on AI output format
-                    for section in sections:
-                        if section.strip():
-                            # Use the first line as the expander title
-                            lines = section.strip().split("\n")
-                            expander_title = lines[0][:100] + "..." if len(lines[0]) > 100 else lines[0]
-                            with st.expander(expander_title):
-                                st.write(section) # Display the full section changes
-                                st.rerun()
+                    st.session_state.strategy_download_details = {
+                        "content": strategy_content,
+                        "file_name": f"{business_type.replace(' ', '_')}_Growth_Playbook.txt",
+                        "business_type_display": business_type # For display purposes
+                    }
+                    st.rerun()
     if st.session_state.strategy_download_details:
         details = st.session_state.strategy_download_details
         st.subheader(f"Your Growth Playbook for: {details['business_type_display']}")
