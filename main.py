@@ -22,7 +22,9 @@ import plotly.express as px
 from PIL import Image
 import json
 from fpdf import FPDF
-
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode, ClientSettings
+import av 
+#
 # Load environment variables
 # Note: Ensure JWT_SECRET is set in your environment variables
 # os.environ['JWT_SECRET'] = 'your_super_secret_key_here' # Example, replace with actual secret
@@ -2900,85 +2902,184 @@ def opportunities_module(business_id, ai_models):
     cur.close(); conn.close()
 
 # Voice Navigation Module
-def voice_navigation(business_id, ai_models):
-    """Streamlit module for Voice Navigation (Simulated)."""
+class AudioRecorderProcessor(AudioProcessorBase):
+    """
+    A custom audio processor for streamlit-webrtc.
+    It collects audio frames and makes them available as a single byte buffer.
+    """
+    def __init__(self):
+        super().__init__()
+        self.frames_bytes = []  # Buffer to store raw bytes of audio frames
+        self.sample_rate = None
+        self.sample_width = None # Bytes per sample (e.g., 2 for int16)
+        self._is_recording = True # Internal flag to control frame accumulation
+
+    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+        """Receives audio frames from WebRTC, processes, and stores them."""
+        if not self._is_recording:
+            return frame # Pass through if not actively recording
+
+        if not self.frames_bytes:  # On the first frame received
+            self.sample_rate = frame.sample_rate
+            # Determine sample_width from frame format for speech_recognition.AudioData
+            if frame.format.name == 's16': # Signed 16-bit PCM
+                self.sample_width = 2
+            elif frame.format.name in ['fltp', 'flt']: # Float PCM (planar or non-planar)
+                self.sample_width = 2 # We will convert this to s16 for speech_recognition
+            else:
+                # Fallback for other formats, assuming conversion to s16
+                st.warning(f"Audio frame format is {frame.format.name}, attempting s16 conversion. Sample width set to 2.")
+                self.sample_width = 2
+        
+        # Convert PyAV frame to a NumPy array
+        np_frame_data = frame.to_ndarray() # Shape is (channels, samples) or (samples,) for mono
+
+        # Ensure mono audio (speech_recognition usually prefers mono)
+        if np_frame_data.ndim > 1 and np_frame_data.shape[0] > 1: # If stereo
+            # Convert to mono by averaging channels or taking the first one
+            np_frame_mono = np.mean(np_frame_data, axis=0).astype(np_frame_data.dtype)
+            # Alternatively: np_frame_mono = np_frame_data[0, :] 
+        else:
+            np_frame_mono = np_frame_data.flatten()
+
+        # Convert to 16-bit PCM if it's float (speech_recognition.AudioData expects PCM)
+        if np_frame_mono.dtype in [np.float32, np.float64]:
+            np_frame_mono_int16 = (np_frame_mono * 32767).astype(np.int16)
+        elif np_frame_mono.dtype == np.int16:
+            np_frame_mono_int16 = np_frame_mono
+        else:
+            # Attempt conversion for other unexpected types
+            st.warning(f"Unexpected audio frame dtype: {np_frame_mono.dtype}. Attempting int16 conversion.")
+            np_frame_mono_int16 = np_frame_mono.astype(np.int16)
+        
+        self.frames_bytes.append(np_frame_mono_int16.tobytes())
+        
+        return frame # Echo the frame back (standard practice)
+
+    def get_recorded_data(self) -> tuple[bytes | None, int | None, int | None]:
+        """Returns the accumulated audio data and resets the buffer."""
+        if not self.frames_bytes:
+            return None, None, None
+        
+        audio_data = b"".join(self.frames_bytes)
+        # Clear buffer for next potential recording
+        self.frames_bytes = [] 
+        # Keep sample_rate and sample_width as they were detected for the last recording session
+        return audio_data, self.sample_rate, self.sample_width
+    
+    def stop_recording(self):
+        """Signals that recording should stop accumulating frames."""
+        self._is_recording = False
+
+    def start_recording(self):
+        """Resets the processor state for a new recording."""
+        self._is_recording = True
+        self.frames_bytes = []
+        self.sample_rate = None
+        self.sample_width = None
+
+
+def voice_navigation(business_id, ai_models): # ai_models might not be used directly here
+    """Streamlit module for Voice Navigation using streamlit-webrtc."""
     st.header("🎙️ Voice Navigation")
-    st.info("Voice navigation is simulated. Speak a command to see which module it would navigate to.")
-    
+    st.info("Click 'Start' to record your command using your microphone. Click 'Stop' when finished to process.")
+    st.caption("Ensure your browser has microphone permissions enabled for this site.")
+
     r = sr.Recognizer()
+    webrtc_ctx = webrtc_streamer(
+        key="voice_nav_webrtc",
+        mode=WebRtcMode.SENDONLY,
+        audio_processor_factory=AudioRecorderProcessor, # Pass the class itself
+        media_stream_constraints={"audio": True, "video": False},
+        client_settings=ClientSettings(
+            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+            media_stream_constraints={"audio": True, "video": False},
+        ),
+        # desired_playing_state can be used to control start/stop programmatically if needed
+    )
+
+    if webrtc_ctx.state.playing:
+        st.info("🎤 Recording... Click 'Stop' on the recorder above when finished.")
     
-    st.write("Click the button below and speak your command:")
-    
-    # Use Streamlit's audio recorder for better integration
-    audio_bytes = st.audio_recorder("Record Command", key="voice_nav_recorder")
+    # Check if the stream has been stopped by the user and if the processor is available
+    if not webrtc_ctx.state.playing and webrtc_ctx.audio_processor:
+        # Access the processor instance that was used for the stream
+        audio_processor_instance = webrtc_ctx.audio_processor
+        
+        if 'voice_nav_processed' not in st.session_state:
+            st.session_state.voice_nav_processed = False
 
-    if audio_bytes:
-        with st.spinner("Transcribing command..."):
-            try:
-                audio_file = BytesIO(audio_bytes)
-                with sr.AudioFile(audio_file) as source:
-                    audio = r.record(source)
-                command = r.recognize_google(audio)
-                
-                st.success(f"You said: {command}")
-                
-                # Process command (simplified keyword matching)
-                command_lower = command.lower()
-                nav_target = None
+        if not st.session_state.voice_nav_processed and audio_processor_instance.frames_bytes: # Check internal buffer before calling get
+            audio_bytes_data, sample_rate, sample_width = audio_processor_instance.get_recorded_data()
+            st.session_state.voice_nav_processed = True # Mark as processed for this stop event
 
-                if "inventory" in command_lower or "billing" in command_lower or "product" in command_lower:
-                    nav_target = "Inventory & Billing"
-                elif "hr" in command_lower or "human resources" in command_lower or "employee" in command_lower:
-                    nav_target = "HR Tools"
-                elif "project" in command_lower or "gantt" in command_lower:
-                    nav_target = "Project Manager"
-                elif "document" in command_lower or "template" in command_lower or "library" in command_lower:
-                    nav_target = "Document Generator"
-                elif "market analysis" in command_lower or "trend" in command_lower or "competitor" in command_lower:
-                    nav_target = "Market Analysis Tool"
-                elif "chat" in command_lower or "assistant" in command_lower or "ai" in command_lower:
-                    nav_target = "Market Doubt Assistant (AI Chatbot)"
-                elif "investor" in command_lower or "funding" in command_lower or "deal" in command_lower:
-                    nav_target = "Investor & Agent Dashboards"
-                elif "scheme" in command_lower or "grant" in command_lower or "news" in command_lower:
-                    nav_target = "Govt/Private Schemes & News Alerts"
-                elif "opportunity" in command_lower or "lead" in command_lower or "competition" in command_lower:
-                    nav_target = "Opportunity Director"
-                elif "pitch" in command_lower or "deck" in command_lower or "script" in command_lower:
-                    nav_target = "Pitching Helper"
-                elif "strategy" in command_lower or "playbook" in command_lower:
-                    nav_target = "Strategy Generator"
-                elif "hiring" in command_lower or "job" in command_lower or "onboarding" in command_lower:
-                    nav_target = "Hiring Helper"
-                elif "tax" in command_lower or "gst" in command_lower or "filing" in command_lower:
-                    nav_target = "Tax & GST Filing"
-                elif "ipo" in command_lower or "cap table" in command_lower:
-                    nav_target = "IPO & Cap Table Management"
-                elif "legal" in command_lower or "ca" in command_lower or "insurance" in command_lower or "marketplace" in command_lower:
-                    nav_target = "Legal, CA & Insurance Marketplace"
-                elif "intelligence" in command_lower or "analytics" in command_lower or "report" in command_lower:
-                    nav_target = "Enterprise Intelligence Dashboards"
-                elif "forecasting" in command_lower or "predictive" in command_lower:
-                    nav_target = "AI Market Forecasting"
-                elif "dashboard" in command_lower or "overview" in command_lower:
-                    nav_target = "Dashboard"
-                elif "message" in command_lower or "chat with" in command_lower:
-                     nav_target = "Messaging" # Added Messaging module
+            if audio_bytes_data and sample_rate and sample_width:
+                st.success("Audio captured via WebRTC. Transcribing...")
+                with st.spinner("Transcribing command..."):
+                    try:
+                        audio_data_sr = sr.AudioData(audio_bytes_data, sample_rate, sample_width)
+                        command = r.recognize_google(audio_data_sr)
+                        st.success(f"You said: \"{command}\"")
+                        
+                        command_lower = command.lower()
+                        nav_target = None
 
-                if nav_target:
-                    st.info(f"Simulating navigation to: **{nav_target}**")
-                    # In a real app, you would update session state or use Streamlit's page navigation
-                    # st.session_state.selected_module = nav_target # If using session state for module selection
-                    # st.rerun() # Rerun to switch module
-                else:
-                    st.info("Command not recognized. Please try again.")
+                        if "inventory" in command_lower or "billing" in command_lower or "product" in command_lower:
+                            nav_target = "Inventory & Billing"
+                        elif "hr" in command_lower or "human resources" in command_lower or "employee" in command_lower:
+                            nav_target = "HR Tools"
+                        elif "project" in command_lower or "gantt" in command_lower:
+                            nav_target = "Project Manager"
+                        elif "document" in command_lower or "template" in command_lower or "library" in command_lower:
+                            nav_target = "Document Generator"
+                        elif "market analysis" in command_lower or "trend" in command_lower or "competitor" in command_lower:
+                            nav_target = "Market Analysis Tool"
+                        elif "chat" in command_lower or "assistant" in command_lower or "ai" in command_lower:
+                            nav_target = "Market Doubt Assistant (AI Chatbot)"
+                        elif "investor" in command_lower or "funding" in command_lower or "deal" in command_lower:
+                            nav_target = "Investor & Agent Dashboards"
+                        elif "scheme" in command_lower or "grant" in command_lower or "news" in command_lower:
+                            nav_target = "Govt/Private Schemes & News Alerts"
+                        elif "opportunity" in command_lower or "lead" in command_lower or "competition" in command_lower:
+                            nav_target = "Opportunity Director"
+                        elif "pitch" in command_lower or "deck" in command_lower or "script" in command_lower:
+                            nav_target = "Pitching Helper"
+                        elif "strategy" in command_lower or "playbook" in command_lower:
+                            nav_target = "Strategy Generator"
+                        elif "hiring" in command_lower or "job" in command_lower or "onboarding" in command_lower:
+                            nav_target = "Hiring Helper"
+                        elif "tax" in command_lower or "gst" in command_lower or "filing" in command_lower:
+                            nav_target = "Tax & GST Filing"
+                        elif "ipo" in command_lower or "cap table" in command_lower:
+                            nav_target = "IPO & Cap Table Management"
+                        elif "legal" in command_lower or "ca" in command_lower or "insurance" in command_lower or "marketplace" in command_lower:
+                            nav_target = "Legal, CA & Insurance Marketplace"
+                        elif "intelligence" in command_lower or "analytics" in command_lower or "report" in command_lower:
+                            nav_target = "Enterprise Intelligence Dashboards"
+                        elif "forecasting" in command_lower or "predictive" in command_lower:
+                            nav_target = "AI Market Forecasting"
+                        elif "dashboard" in command_lower or "overview" in command_lower:
+                            nav_target = "Dashboard"
+                        elif "message" in command_lower or "chat with" in command_lower:
+                             nav_target = "Messaging"
 
-            except sr.UnknownValueError:
-                st.error("Could not understand audio. Please try speaking more clearly.")
-            except sr.RequestError as e:
-                st.error(f"Could not request results from speech recognition service; {e}")
-            except Exception as e:
-                st.error(f"An unexpected error occurred during transcription: {e}")
+                        if nav_target:
+                            st.info(f"Simulating navigation to: **{nav_target}**")
+                            # st.rerun() 
+                        else:
+                            st.info("Command not recognized or no specific navigation target found.")
+
+                    except sr.UnknownValueError:
+                        st.error("Google Speech Recognition could not understand the audio.")
+                    except sr.RequestError as e:
+                        st.error(f"Could not request results from Google Speech Recognition service; {e}")
+                    except Exception as e:
+                        st.error(f"An unexpected error occurred during transcription: {e}")
+            
+    if webrtc_ctx.state.playing and st.session_state.get('voice_nav_processed', False):
+        st.session_state.voice_nav_processed = False
+        if webrtc_ctx.audio_processor: # Call start on the new/reused processor instance
+            webrtc_ctx.audio_processor.start_recording()
 
 # Pitching Helper Module
 def pitching_helper(business_id, ai_models):
