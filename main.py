@@ -4174,26 +4174,23 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
     
     end_date = datetime.now().date()
     
+    # Ensure 'dates' for df_data are UTC-aware from the start
     if period_type == 'M':
-        # Use Month Start frequency and make it UTC-aware
         dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS').tz_localize('UTC')
         period_label_format = '%Y-%m'
         sql_trunc_period = 'month'
     elif period_type == 'Q':
-        # Use Quarter Start frequency and make it UTC-aware
         current_quarter_start_naive = pd.Timestamp(end_date).to_period('Q').start_time.date()
-        # pd.date_range needs a Timestamp for tz_localize, ensure end_date is Timestamp if using directly
         dates = pd.date_range(end=pd.Timestamp(current_quarter_start_naive), periods=num_periods, freq='QS').tz_localize('UTC')
         sql_trunc_period = 'quarter'
-    else: # Default to monthly, make it UTC-aware
+    else: # Default to monthly
         dates = pd.date_range(end=end_date.replace(day=1), periods=num_periods, freq='MS').tz_localize('UTC')
         period_label_format = '%Y-%m'
         sql_trunc_period = 'month'
 
-    df_data = pd.DataFrame({'PeriodStart': dates}) # Now df_data['PeriodStart'] is UTC-aware
+    df_data = pd.DataFrame({'PeriodStart': dates}) # df_data['PeriodStart'] is now UTC-aware
     
     if period_type == 'Q':
-        # For Quarter labels, ensure we handle the UTC datetime correctly for formatting
         df_data['PeriodLabel'] = df_data['PeriodStart'].apply(lambda x: f"{x.year}-Q{((x.month-1)//3)+1}")
     else:
         df_data['PeriodLabel'] = df_data['PeriodStart'].dt.strftime(period_label_format)
@@ -4207,25 +4204,29 @@ def get_financial_performance_data(business_id, num_periods=12, period_type='M')
             GROUP BY period_start_db
             ORDER BY period_start_db;
         """)
-        # Ensure dates.min() is a date object for the query if needed,
-        # but for comparison with TIMESTAMP WITH TIME ZONE, direct Timestamp might be fine.
         min_date_for_query = dates.min().date() # Querying with date part
         
         cur.execute(query_revenue, (sql_trunc_period, business_id, min_date_for_query, end_date))
         revenue_data = cur.fetchall()
         df_revenue = pd.DataFrame(revenue_data, columns=['PeriodStart', 'Revenue'])
+        
         if not df_revenue.empty:
-            # pd.to_datetime will likely make this UTC-aware if DB stores timezone
             df_revenue['PeriodStart'] = pd.to_datetime(df_revenue['PeriodStart'])
-            # If df_revenue['PeriodStart'] is not UTC by default from DB, ensure it is:
-            if df_revenue['PeriodStart'].dt.tz is None:
+            
+            # Corrected timezone handling for df_revenue['PeriodStart']
+            current_tz = df_revenue['PeriodStart'].dt.tz
+            if current_tz is None:
+                # It's naive, localize to UTC
                 df_revenue['PeriodStart'] = df_revenue['PeriodStart'].dt.tz_localize('UTC')
-            elif df_revenue['PeriodStart'].dt.tz.zone != 'UTC': # type: ignore
-                 df_revenue['PeriodStart'] = df_revenue['PeriodStart'].dt.tz_convert('UTC')
-
+            elif current_tz != timezone.utc: # Directly compare with datetime.timezone.utc
+                # It's aware but not standard UTC, convert to UTC
+                df_revenue['PeriodStart'] = df_revenue['PeriodStart'].dt.tz_convert('UTC')
+            # If current_tz is already timezone.utc, no action is needed.
+            
             df_data = pd.merge(df_data, df_revenue, on='PeriodStart', how='left')
         else:
             df_data['Revenue'] = 0.0
+            
     except Exception as e:
         st.error(f"Error fetching revenue data: {e}")
         df_data['Revenue'] = 0.0
